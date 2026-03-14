@@ -1,10 +1,18 @@
 #include "GPS_Module.h"
 
-GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, long baud)
-    : _serial(serial), _rxPin(rxPin), _txPin(txPin), _baud(baud) {}
+volatile unsigned long GPS_Module::_ppsPulses   = 0;
+volatile unsigned long GPS_Module::_ppsLastUs   = 0;
+volatile unsigned long GPS_Module::_ppsPeriodUs = 0;
+volatile bool GPS_Module::_ppsSeen              = false;
+
+GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud)
+    : _serial(serial), _rxPin(rxPin), _txPin(txPin), _ppsPin(ppsPin), _baud(baud) {}
 
 void GPS_Module::begin() {
     _serial.begin(_baud, SERIAL_8N1, _rxPin, _txPin);
+
+    pinMode(_ppsPin, INPUT);
+    attachInterrupt(digitalPinToInterrupt(_ppsPin), ppsISR, RISING);
 }
 
 void GPS_Module::update() {
@@ -137,14 +145,51 @@ bool GPS_Module::getLastValidLocalDateTime(DateTime& outLocal) const {
     return rmcToLocalDateTimeUTCminus3(_lastValidRmc, outLocal);
 }
 
+bool GPS_Module::hasLastValidRmc() const {
+    return _haveLastValidRmc;
+}
+
+unsigned long GPS_Module::getLastValidRmcAgeMs() const {
+    if (!_haveLastValidRmc) return 0;
+    return millis() - _lastValidRmcMs;
+}
+
 unsigned long GPS_Module::getTxtCount() const { return _cntTXT; }
 unsigned long GPS_Module::getRmcCount() const { return _cntRMC; }
 unsigned long GPS_Module::getGgaCount() const { return _cntGGA; }
 unsigned long GPS_Module::getOtherCount() const { return _cntOTROS; }
 
-bool GPS_Module::hasLastValidRmc() const { return _haveLastValidRmc; }
+unsigned long GPS_Module::getPpsPulseCount() const {
+    noInterrupts();
+    unsigned long v = _ppsPulses;
+    interrupts();
+    return v;
+}
 
-unsigned long GPS_Module::getLastValidRmcAgeMs() const {
-    if (!_haveLastValidRmc) return 0;
-    return millis() - _lastValidRmcMs;
+unsigned long GPS_Module::getPpsPeriodUs() const {
+    noInterrupts();
+    unsigned long v = _ppsPeriodUs;
+    interrupts();
+    return v;
+}
+
+bool GPS_Module::hasSeenPps() const {
+    noInterrupts();
+    bool v = _ppsSeen;
+    interrupts();
+    return v;
+}
+
+void IRAM_ATTR GPS_Module::ppsISR() {
+    unsigned long nowUs = micros();
+    _ppsPulses++;
+
+    if (_ppsSeen) {
+        _ppsPeriodUs = nowUs - _ppsLastUs;
+    } else {
+        _ppsSeen = true;
+        _ppsPeriodUs = 0;
+    }
+
+    _ppsLastUs = nowUs;
 }
