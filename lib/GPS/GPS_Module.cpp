@@ -1,9 +1,11 @@
 #include "GPS_Module.h"
 
-volatile unsigned long GPS_Module::_ppsPulses   = 0;
-volatile unsigned long GPS_Module::_ppsLastUs   = 0;
-volatile unsigned long GPS_Module::_ppsPeriodUs = 0;
-volatile bool GPS_Module::_ppsSeen              = false;
+// ========= Static PPS =========
+volatile unsigned long GPS_Module::_ppsPulses      = 0;
+volatile unsigned long GPS_Module::_ppsLastUs      = 0;
+volatile unsigned long GPS_Module::_ppsPeriodUs    = 0;
+volatile bool          GPS_Module::_ppsSeen        = false;
+volatile unsigned long GPS_Module::_ppsLastUsValid = 0;
 
 GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud)
     : _serial(serial), _rxPin(rxPin), _txPin(txPin), _ppsPin(ppsPin), _baud(baud) {}
@@ -42,6 +44,7 @@ void GPS_Module::update() {
         }
     }
 
+    // timeout de sentencia incompleta
     if (_inSentence && (millis() - _lastByteMs) > 200) {
         closeSentenceIfNeeded();
     }
@@ -55,19 +58,72 @@ void GPS_Module::closeSentenceIfNeeded() {
     _nmeaLine = "";
 }
 
+// ===== Helpers para parseo simple por comas =====
+static String nmeaField(const String& s, int idx) {
+    int field = 0;
+    int start = 0;
+    for (int i = 0; i <= (int)s.length(); i++) {
+        if (i == (int)s.length() || s[i] == ',') {
+            if (field == idx) return s.substring(start, i);
+            field++;
+            start = i + 1;
+        }
+    }
+    return "";
+}
+
+static float toFloatSafe(String x) {
+    if (x.length() == 0) return -1.0f;
+    int star = x.indexOf('*');
+    if (star >= 0) x = x.substring(0, star);
+    return x.toFloat();
+}
+
+static int toIntSafe(String x) {
+    if (x.length() == 0) return -1;
+    int star = x.indexOf('*');
+    if (star >= 0) x = x.substring(0, star);
+    return x.toInt();
+}
+
 void GPS_Module::processSentence(const String& line) {
     if (line.length() < 6) return;
 
+    // Contadores por prefijo
     if (line.startsWith("$GPTXT") || line.startsWith("$GNTXT")) _cntTXT++;
     else if (line.startsWith("$GPRMC") || line.startsWith("$GNRMC")) _cntRMC++;
     else if (line.startsWith("$GPGGA") || line.startsWith("$GNGGA")) _cntGGA++;
+    else if (line.startsWith("$GPGSA") || line.startsWith("$GNGSA")) _cntGSA++;
     else _cntOTROS++;
 
+    // ---- Parse RMC (solo GP/GN) ----
     RmcData r;
     if (parseRMC(line, r) && rmcEsRazonable(r)) {
         _lastValidRmc = r;
         _haveLastValidRmc = true;
         _lastValidRmcMs = millis();
+
+        // Guardar también como DateTime local + snapshot del contador PPS
+        DateTime loc(2000,1,1,0,0,0);
+        if (rmcToLocalDateTimeUTCminus3(r, loc)) {
+            _lastRmcLocal = loc;
+            _haveLastRmcLocal = true;
+            _ppsCountAtLastRmc = getPpsPulseCount(); // snapshot consistente
+        }
+    }
+
+    // ---- Parse GGA: num sats + HDOP ----
+    if (line.startsWith("$GPGGA") || line.startsWith("$GNGGA")) {
+        _ggaNumSats = toIntSafe(nmeaField(line, 7));
+        _ggaHdop    = toFloatSafe(nmeaField(line, 8));
+    }
+
+    // ---- Parse GSA: fix type + PDOP/HDOP/VDOP ----
+    if (line.startsWith("$GPGSA") || line.startsWith("$GNGSA")) {
+        _gsaFixType = toIntSafe(nmeaField(line, 2));
+        _gsaPdop    = toFloatSafe(nmeaField(line, 15));
+        _gsaHdop    = toFloatSafe(nmeaField(line, 16));
+        _gsaVdop    = toFloatSafe(nmeaField(line, 17));
     }
 }
 
@@ -94,12 +150,14 @@ bool GPS_Module::parseRMC(const String& s, RmcData& out) {
 
     out.valid = (status.length() > 0 && status[0] == 'A');
 
+    // hhmmss.sss -> tomamos hhmmss
     if (timeStr.length() >= 6) {
         out.hour   = timeStr.substring(0, 2).toInt();
         out.minute = timeStr.substring(2, 4).toInt();
         out.second = timeStr.substring(4, 6).toInt();
     }
 
+    // ddmmyy
     if (dateStr.length() >= 6) {
         out.day   = dateStr.substring(0, 2).toInt();
         out.month = dateStr.substring(2, 4).toInt();
@@ -145,20 +203,44 @@ bool GPS_Module::getLastValidLocalDateTime(DateTime& outLocal) const {
     return rmcToLocalDateTimeUTCminus3(_lastValidRmc, outLocal);
 }
 
-bool GPS_Module::hasLastValidRmc() const {
-    return _haveLastValidRmc;
-}
+bool GPS_Module::hasLastValidRmc() const { return _haveLastValidRmc; }
 
 unsigned long GPS_Module::getLastValidRmcAgeMs() const {
     if (!_haveLastValidRmc) return 0;
     return millis() - _lastValidRmcMs;
 }
 
+// ===== GNSS @ PPS estable =====
+bool GPS_Module::getGpsLocalAtPps(DateTime& outLocal) const {
+    if (!_haveLastRmcLocal) return false;
+
+    unsigned long ppsNow = getPpsPulseCount();
+    if (ppsNow < _ppsCountAtLastRmc) return false; // por seguridad
+
+    uint32_t t = _lastRmcLocal.unixtime();
+    t += (uint32_t)(ppsNow - _ppsCountAtLastRmc);
+
+    outLocal = DateTime(t);
+    return true;
+}
+
+// ===== Getters contadores =====
 unsigned long GPS_Module::getTxtCount() const { return _cntTXT; }
 unsigned long GPS_Module::getRmcCount() const { return _cntRMC; }
 unsigned long GPS_Module::getGgaCount() const { return _cntGGA; }
+unsigned long GPS_Module::getGsaCount() const { return _cntGSA; }
 unsigned long GPS_Module::getOtherCount() const { return _cntOTROS; }
 
+// ===== Getters métricas =====
+int   GPS_Module::getGgaNumSats() const { return _ggaNumSats; }
+float GPS_Module::getGgaHdop() const { return _ggaHdop; }
+
+int   GPS_Module::getGsaFixType() const { return _gsaFixType; }
+float GPS_Module::getGsaPdop() const { return _gsaPdop; }
+float GPS_Module::getGsaHdop() const { return _gsaHdop; }
+float GPS_Module::getGsaVdop() const { return _gsaVdop; }
+
+// ===== Getters PPS =====
 unsigned long GPS_Module::getPpsPulseCount() const {
     noInterrupts();
     unsigned long v = _ppsPulses;
@@ -175,21 +257,49 @@ unsigned long GPS_Module::getPpsPeriodUs() const {
 
 bool GPS_Module::hasSeenPps() const {
     noInterrupts();
-    bool v = _ppsSeen;
+    bool ok = (_ppsPulses > 0);
+    interrupts();
+    return ok;
+}
+
+unsigned long GPS_Module::getLastPpsUs() const {
+    noInterrupts();
+    unsigned long v = _ppsLastUsValid;
     interrupts();
     return v;
 }
 
+// ================== PPS ISR con filtro “limpio” ==================
 void IRAM_ATTR GPS_Module::ppsISR() {
     unsigned long nowUs = micros();
-    _ppsPulses++;
 
-    if (_ppsSeen) {
-        _ppsPeriodUs = nowUs - _ppsLastUs;
-    } else {
+    // Primer flanco: inicializar referencia
+    if (!_ppsSeen) {
         _ppsSeen = true;
+        _ppsLastUs = nowUs;
+        _ppsLastUsValid = 0;
         _ppsPeriodUs = 0;
+        _ppsPulses = 0;
+        return;
     }
 
+    unsigned long dt = nowUs - _ppsLastUs;
+
+    // 1) Glitch / rebote: demasiado rápido
+    if (dt < 200000UL) {
+        return; // ignorar, NO tocar _ppsLastUs
+    }
+
+    // 2) PPS “real” (aceptar y contar)
+    if (dt >= 800000UL && dt <= 1200000UL) {
+        _ppsPeriodUs = dt;
+        _ppsLastUs = nowUs;          // importantísimo
+        _ppsLastUsValid = nowUs;
+        _ppsPulses++;
+        return;
+    }
+
+    // 3) dt demasiado grande: resync
     _ppsLastUs = nowUs;
+    // NO incremento _ppsPulses
 }

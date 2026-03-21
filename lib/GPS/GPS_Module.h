@@ -17,22 +17,38 @@ public:
     void begin();
     void update();
 
-    // RMC válida
+    // ===== RMC válida =====
     bool hasValidRmcRecent(unsigned long maxAgeMs) const;
-    bool getLastValidLocalDateTime(DateTime& outLocal) const;
+    bool getLastValidLocalDateTime(DateTime& outLocal) const;   // local UTC-3 desde última RMC válida
     bool hasLastValidRmc() const;
     unsigned long getLastValidRmcAgeMs() const;
 
-    // Contadores NMEA
+    // ===== GNSS @ PPS (estable, SIN “RMC+1” inventado) =====
+    // Devuelve la hora GNSS (local UTC-3) asignada al “segundo PPS actual”.
+    // Requiere haber tenido al menos una RMC válida alguna vez.
+    bool getGpsLocalAtPps(DateTime& outLocal) const;
+
+    // ===== Contadores NMEA =====
     unsigned long getTxtCount() const;
     unsigned long getRmcCount() const;
     unsigned long getGgaCount() const;
+    unsigned long getGsaCount() const;
     unsigned long getOtherCount() const;
 
-    // PPS
-    unsigned long getPpsPulseCount() const;
-    unsigned long getPpsPeriodUs() const;
-    bool hasSeenPps() const;
+    // ===== Métricas GNSS =====
+    int   getGgaNumSats() const;
+    float getGgaHdop() const;
+
+    int   getGsaFixType() const;   // 1=no fix, 2=2D, 3=3D
+    float getGsaPdop() const;
+    float getGsaHdop() const;
+    float getGsaVdop() const;
+
+    // ===== PPS “limpio” =====
+    unsigned long getPpsPulseCount() const; // pulsos PPS aceptados como PPS real
+    unsigned long getPpsPeriodUs() const;   // último período aceptado (us)
+    bool hasSeenPps() const;                // vio PPS aceptado alguna vez
+    unsigned long getLastPpsUs() const;     // timestamp (micros) del último PPS aceptado
 
 private:
     HardwareSerial& _serial;
@@ -41,27 +57,43 @@ private:
     int _ppsPin;
     long _baud;
 
-    // NMEA
+    // ===== NMEA stream =====
     String _nmeaLine;
     bool _inSentence = false;
     unsigned long _lastByteMs = 0;
 
-    // Última RMC válida
+    // ===== Métricas parseadas =====
+    int _ggaNumSats = -1;
+    float _ggaHdop = -1.0f;
+
+    int _gsaFixType = -1;
+    float _gsaPdop = -1.0f;
+    float _gsaHdop = -1.0f;
+    float _gsaVdop = -1.0f;
+
+    // ===== Última RMC válida =====
     RmcData _lastValidRmc;
     bool _haveLastValidRmc = false;
     unsigned long _lastValidRmcMs = 0;
 
-    // Contadores
+    // ===== “Etiqueta” de tiempo para PPS (estable) =====
+    DateTime _lastRmcLocal = DateTime(2000,1,1,0,0,0);
+    bool _haveLastRmcLocal = false;
+    unsigned long _ppsCountAtLastRmc = 0;
+
+    // ===== Contadores =====
     unsigned long _cntTXT = 0;
     unsigned long _cntRMC = 0;
     unsigned long _cntGGA = 0;
+    unsigned long _cntGSA = 0;
     unsigned long _cntOTROS = 0;
 
-    // PPS (static para ISR)
-    static volatile unsigned long _ppsPulses;
-    static volatile unsigned long _ppsLastUs;
-    static volatile unsigned long _ppsPeriodUs;
-    static volatile bool _ppsSeen;
+    // ===== PPS (static para ISR) =====
+    static volatile unsigned long _ppsPulses;       // pulsos PPS aceptados
+    static volatile unsigned long _ppsLastUs;       // último timestamp visto (para dt)
+    static volatile unsigned long _ppsPeriodUs;     // período aceptado
+    static volatile bool _ppsSeen;                  // vio al menos un flanco
+    static volatile unsigned long _ppsLastUsValid;  // timestamp del último PPS aceptado
 
     static void IRAM_ATTR ppsISR();
 

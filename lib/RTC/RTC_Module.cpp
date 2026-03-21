@@ -12,10 +12,22 @@ bool RTC_Module::begin() {
         return false;
     }
 
-    _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
+    // ===== SQW opcional =====
+    // Si sqwPin < 0, no configuramos SQW ni attachInterrupt.
+    if (_sqwPin >= 0) {
+        // OJO: esta línea depende de que el módulo/placa responda bien.
+        // Si más adelante querés probar:
+        // _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
+        // _rtc.writeSqwPinMode(DS3231_SquareWave1kHz);
+        // _rtc.writeSqwPinMode(DS3231_SquareWave4kHz);
+        // _rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
+        //
+        // Por ahora NO la activamos para no interferir con el pin 32K/PCNT.
+        // _rtc.writeSqwPinMode(DS3231_SquareWave1kHz);
 
-    pinMode(_sqwPin, INPUT);
-    attachInterrupt(digitalPinToInterrupt(_sqwPin), sqwISR, RISING);
+        pinMode(_sqwPin, INPUT); // sin pullup por defecto (SQW suele ser push-pull)
+        attachInterrupt(digitalPinToInterrupt(_sqwPin), sqwISR, RISING);
+    }
 
     return true;
 }
