@@ -22,6 +22,9 @@ public:
     bool getLastValidLocalDateTime(DateTime& outLocal) const;   // local UTC-3 desde última RMC válida
     bool hasLastValidRmc() const;
     unsigned long getLastValidRmcAgeMs() const;
+    bool hasGpsPpsTime() const;
+    uint32_t getGpsPpsUnixLocal() const; // UTC-3 en epoch
+    unsigned long getGpsPpsAgeMs() const; // qué tan viejo es ese latch
 
     // ===== GNSS @ PPS (estable, SIN “RMC+1” inventado) =====
     // Devuelve la hora GNSS (local UTC-3) asignada al “segundo PPS actual”.
@@ -75,6 +78,15 @@ private:
     RmcData _lastValidRmc;
     bool _haveLastValidRmc = false;
     unsigned long _lastValidRmcMs = 0;
+     
+    // baseline de RMC (epoch local UTC-3)
+    static volatile uint32_t _lastRmcUnixLocal;
+    static volatile bool _rmcBaselineValid;
+
+    // GNSS time latcheado por PPS
+    static volatile uint32_t _gpsPpsUnixLocal;
+    static volatile bool _gpsPpsValid;
+    static volatile unsigned long _gpsPpsLastMs;
 
     // ===== “Etiqueta” de tiempo para PPS (estable) =====
     DateTime _lastRmcLocal = DateTime(2000,1,1,0,0,0);

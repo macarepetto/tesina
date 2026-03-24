@@ -20,32 +20,40 @@ bool RTC32K_Pcnt_Module::begin(uint16_t filterTicks) {
   cfg.lctrl_mode = PCNT_MODE_KEEP;
   cfg.hctrl_mode = PCNT_MODE_KEEP;
 
-  // límite 16-bit signed: 32767. OJO: 32kHz * 1s = 32768, justo 1 más.
+  // 16-bit signed: máximo 32767. Con 32kHz en 1s siempre llegamos al límite.
   cfg.counter_h_lim = 32767;
   cfg.counter_l_lim = 0;
 
   if (pcnt_unit_config(&cfg) != ESP_OK) return false;
 
-  // Filtro anti-glitch (en ticks de APB). 400 ~ 5us aprox (depende del core).
-  pcnt_set_filter_value(_unit, filterTicks);
-  pcnt_filter_enable(_unit);
+  // ========= FILTRO: solo si > 0 =========
+  if (filterTicks > 0) {
+    if (pcnt_set_filter_value(_unit, filterTicks) != ESP_OK) return false;
+    if (pcnt_filter_enable(_unit) != ESP_OK) return false;
+  } else {
+    // IMPORTANTÍSIMO: si es 0, NO habilitar filtro
+    pcnt_filter_disable(_unit);
+  }
 
-  pcnt_counter_pause(_unit);
-  pcnt_counter_clear(_unit);
+  if (pcnt_counter_pause(_unit) != ESP_OK) return false;
+  if (pcnt_counter_clear(_unit) != ESP_OK) return false;
 
-  // evento por llegar al límite alto
-  pcnt_event_enable(_unit, PCNT_EVT_H_LIM);
+  // evento al llegar al límite alto
+  if (pcnt_event_enable(_unit, PCNT_EVT_H_LIM) != ESP_OK) return false;
 
   if (!_isrServiceInstalled) {
-    // instala servicio ISR una sola vez
-    pcnt_isr_service_install(0);
+    if (pcnt_isr_service_install(0) != ESP_OK) return false;
     _isrServiceInstalled = true;
   }
 
-  pcnt_isr_handler_add(_unit, pcntIsr, (void*)_unit);
+  // Por las dudas, si ya estaba agregado, lo removemos (evita duplicados al reiniciar)
+  pcnt_isr_handler_remove(_unit);
+
+  if (pcnt_isr_handler_add(_unit, pcntIsr, (void*)_unit) != ESP_OK) return false;
 
   _ovf[_unit] = 0;
-  pcnt_counter_resume(_unit);
+
+  if (pcnt_counter_resume(_unit) != ESP_OK) return false;
   return true;
 }
 
@@ -55,15 +63,14 @@ void IRAM_ATTR RTC32K_Pcnt_Module::pcntIsr(void* arg) {
   uint32_t st = 0;
   pcnt_get_event_status(unit, &st);
 
-  // En este SDK, st es un bitmask con eventos (PCNT_EVT_H_LIM, etc.)
   if (st & PCNT_EVT_H_LIM) {
-    _ovf[unit]++;             // overflow “virtual”
-    pcnt_counter_clear(unit); // volvemos a 0 para seguir contando
+    _ovf[unit]++;             // overflow virtual
+    pcnt_counter_clear(unit); // seguir contando (sí, esto mete un bias fijo de unos pulsos)
   }
 }
 
 uint32_t RTC32K_Pcnt_Module::readAndReset() {
-  // Pausamos para leer consistente y resetear todo junto
+  // Pausamos para leer consistente
   pcnt_counter_pause(_unit);
 
   int16_t c = 0;
@@ -77,7 +84,7 @@ uint32_t RTC32K_Pcnt_Module::readAndReset() {
   pcnt_counter_clear(_unit);
   pcnt_counter_resume(_unit);
 
-  // Cada overflow equivale a 32768 pulsos (porque al llegar a 32767 limpiamos)
+  // Cada overflow equivale a 32768 pulsos (porque limpiamos al llegar a 32767)
   return ov * 32768UL + (uint16_t)c;
 }
 

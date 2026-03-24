@@ -274,7 +274,7 @@ void setup() {
   Serial.println("GPS UART2 listo @9600 (RX=16, TX=17)");
 
   // GPS PPS
-  pinMode(PIN_PPS_GPS, INPUT);
+  pinMode(PIN_PPS_GPS, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(PIN_PPS_GPS), ppsISR, RISING);
   Serial.printf("GPS PPS listo en GPIO%d (RISING)\n", PIN_PPS_GPS);
 

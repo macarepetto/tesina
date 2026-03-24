@@ -10,14 +10,13 @@
 // ================== Pines RTC ==================
 const int PIN_SDA_RTC = 21;
 const int PIN_SCL_RTC = 22;
-const int PIN_SQW_RTC = -1;    // SQW deshabilitado (opcional)
-const int PIN_32K_RTC = 34;    // salida 32K del DS3231 -> GPIO34
+const int PIN_SQW_RTC = -1;     // SQW deshabilitado (opcional)
+const int PIN_32K_RTC = 32;     // salida 32K del DS3231 -> GPIO32
 
 // ================== Pines GPS ==================
 const int GPS_RX  = 16;
 const int GPS_TX  = 17;
-const int GPS_PPS = 35;
-
+const int GPS_PPS = 27;         // PPS del GPS -> GPIO27
 // ================== Botón ==================
 const int PIN_BOTON = 33;
 
@@ -37,6 +36,12 @@ void IRAM_ATTR buttonISR() {
 const char* WIFI_SSID     = "PATAN";
 const char* WIFI_PASSWORD = "autoslocos";
 const char* SERVER_IP     = "192.168.0.119";
+//const char* WIFI_SSID = "W_IF012"; 
+//const char* WIFI_PASSWORD = "if0122022"; 
+//const char* SERVER_IP = "192.168.40.68"; 
+//const char* WIFI_SSID = "motorola one macro 6295"; 
+//const char* WIFI_PASSWORD = "21f112cb2225";
+//const char* SERVER_IP = "10.124.105.91";
 const uint16_t SERVER_PORT = 8080;
 const char* DEVICE_ID = "esp32-prototipo-1";
 
@@ -49,6 +54,28 @@ RTC32K_Pcnt_Module rtc32k(PIN_32K_RTC);
 // ================== Estado derivado ==================
 static unsigned long lastPps = 0;
 static uint32_t last32kCycles = 0;
+
+// “Latch” GNSS@PPS (hora asignada al último PPS válido)
+static bool haveGpsPpsLocal = false;
+static DateTime gpsPpsLocal(2000, 1, 1, 0, 0, 0);
+
+static void appendDateTimeJson(String& msg, const char* key, const DateTime& dt) {
+  msg += ",\"";
+  msg += key;
+  msg += "\":\"";
+  msg += String(dt.year()) + "-";
+  if (dt.month() < 10) msg += "0";
+  msg += String(dt.month()) + "-";
+  if (dt.day() < 10) msg += "0";
+  msg += String(dt.day()) + " ";
+  if (dt.hour() < 10) msg += "0";
+  msg += String(dt.hour()) + ":";
+  if (dt.minute() < 10) msg += "0";
+  msg += String(dt.minute()) + ":";
+  if (dt.second() < 10) msg += "0";
+  msg += String(dt.second());
+  msg += "\"";
+}
 
 void setup() {
   Serial.begin(115200);
@@ -65,12 +92,14 @@ void setup() {
   // GPS + PPS
   gps.begin();
 
+  pinMode(PIN_32K_RTC, INPUT_PULLUP);
+
   // PCNT 32K
-  // Si ves que 400 te “come” pulsos, probá 0/100/200/400.
-  if (!rtc32k.begin(400)) {
+  // Recomendación: arrancá con 0 (filtro apagado) y si hay glitches probá 100/200/400
+  if (!rtc32k.begin(0)) {
     Serial.println("ERROR: PCNT 32K no pudo iniciar");
   } else {
-    Serial.printf("PCNT 32K OK en GPIO%d\n", PIN_32K_RTC);
+    Serial.println("PCNT 32K OK en GPIO34");
   }
 
   // WiFi + TCP
@@ -83,49 +112,66 @@ void setup() {
   Serial.println("RTC OK (NO se ajusta automaticamente).");
   Serial.println("GPS OK.");
   Serial.println("WiFi telemetry iniciada.");
-  Serial.println("Boton: ajusta RTC con GPS (RMC local) si hay RMC valida; sino compile time.");
+  Serial.println("Boton: ajusta RTC con GPS si hay RMC valida; sino compile time.");
 }
 
-void loop() {
-  gps.update();
-  telemetry.update();
+  void loop() {
+    gps.update();
+    telemetry.update();
 
-  // ===== BOTON: ajustar RTC con GPS válido =====
-  if (boton_pressed) {
-    boton_pressed = false;
-    Serial.println("Boton presionado -> intento ajustar RTC con GPS...");
+    // ===== BOTON: ajustar RTC con GPS válido =====
+    if (boton_pressed) {
+      boton_pressed = false;
+      Serial.println("Boton presionado -> intento ajustar RTC con GPS...");
 
-    DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
+      DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
 
-    // Exigir RMC válida reciente (<= 30s)
-    if (gps.hasValidRmcRecent(30000) && gps.getLastValidLocalDateTime(gpsLocal)) {
-      rtc.adjust(gpsLocal);
-      Serial.printf("RTC ajustado con GPS local (UTC-3): %04d/%02d/%02d %02d:%02d:%02d\n",
-                    gpsLocal.year(), gpsLocal.month(), gpsLocal.day(),
-                    gpsLocal.hour(), gpsLocal.minute(), gpsLocal.second());
-    } else {
-      Serial.println("No hay RMC valida reciente. Ajusto RTC a hora de compilacion (fallback).");
-      rtc.adjustToCompileTime();
+      // Exigir RMC válida reciente (<= 30s)
+      if (gps.hasValidRmcRecent(30000) && gps.getLastValidLocalDateTime(gpsLocal)) {
+        rtc.adjust(gpsLocal);
+        Serial.printf("RTC ajustado con GPS local (UTC-3): %04d/%02d/%02d %02d:%02d:%02d\n",
+                      gpsLocal.year(), gpsLocal.month(), gpsLocal.day(),
+                      gpsLocal.hour(), gpsLocal.minute(), gpsLocal.second());
+      } else {
+        Serial.println("No hay RMC valida reciente.");
+      }
     }
-  }
 
-  // ===== PPS: si llega un PPS válido nuevo, leemos 32K (ciclos entre PPS) =====
+  // ===== PPS: si llega un PPS válido nuevo, leemos 32K y latch GNSS@PPS =====
   unsigned long pps = gps.getPpsPulseCount();
   if (pps > 0 && pps != lastPps) {
     lastPps = pps;
 
-    // ciclos 32K en el último segundo GNSS (entre PPS)
-    last32kCycles = rtc32k.readAndReset();
+    uint32_t cycles = rtc32k.readAndReset();
+
+    // SANITY CHECK: descartar mediciones locas (por glitch/ruido/ISR)
+    if (cycles >= 30000UL && cycles <= 36000UL) {
+      last32kCycles = cycles;
+    } else {
+      // no pisamos last32kCycles; solo avisamos por Serial
+      Serial.printf("[PPS] 32K fuera de rango: %lu (IGNORADO)\n", (unsigned long)cycles);
+    }
 
     int32_t err = (int32_t)last32kCycles - 32768;
     Serial.printf("[PPS] 32K cycles/1s(GNSS): %lu (err=%ld)\n",
                   (unsigned long)last32kCycles, (long)err);
+
+    // Latch GNSS@PPS:
+    // tomamos la última RMC válida (segundos) y asumimos PPS ~ inicio del próximo segundo.
+    haveGpsPpsLocal = false;
+    if (gps.hasLastValidRmc()) {
+      DateTime lastGpsLocal(2000, 1, 1, 0, 0, 0);
+      if (gps.getLastValidLocalDateTime(lastGpsLocal)) {
+        gpsPpsLocal = DateTime(lastGpsLocal.unixtime() + 1);
+        haveGpsPpsLocal = true;
+      }
+    }
   }
 
   static unsigned long lastPrint = 0;
   static unsigned long lastSend  = 0;
 
-  // ===== Log local por Serial =====
+  // ===== Log local =====
   if (millis() - lastPrint >= 1000) {
     lastPrint = millis();
 
@@ -150,11 +196,10 @@ void loop() {
       Serial.print(" | PPS_OK:0");
     }
 
-    // RMC local (última)
     if (gps.hasLastValidRmc()) {
       DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
       if (gps.getLastValidLocalDateTime(gpsLocal)) {
-        Serial.printf(" | GPS(RMC local): %04d/%02d/%02d %02d:%02d:%02d age:%lums",
+        Serial.printf(" | GPS(local RMC): %04d/%02d/%02d %02d:%02d:%02d age:%lums",
                       gpsLocal.year(), gpsLocal.month(), gpsLocal.day(),
                       gpsLocal.hour(), gpsLocal.minute(), gpsLocal.second(),
                       gps.getLastValidRmcAgeMs());
@@ -163,9 +208,6 @@ void loop() {
       Serial.print(" | sin RMC valida");
     }
 
-    // GNSS@PPS (estable)
-    DateTime gpsPpsLocal(2000,1,1,0,0,0);
-    bool haveGpsPpsLocal = gps.getGpsLocalAtPps(gpsPpsLocal);
     if (haveGpsPpsLocal) {
       Serial.printf(" | GPS@PPS: %04d/%02d/%02d %02d:%02d:%02d",
                     gpsPpsLocal.year(), gpsPpsLocal.month(), gpsPpsLocal.day(),
@@ -179,21 +221,17 @@ void loop() {
     Serial.println();
   }
 
-  // ===== Envío al servidor =====
+  // ===== Envío al servidor (JSONL) =====
   if (millis() - lastSend >= 1000) {
     lastSend = millis();
 
     DateTime nowRtc = rtc.now();
 
-    // GNSS@PPS estable para este envío
-    DateTime gpsPpsLocal(2000,1,1,0,0,0);
-    bool haveGpsPpsLocal = gps.getGpsLocalAtPps(gpsPpsLocal);
-
     String msg = "{";
-    msg += "\"id\":\"" + String(DEVICE_ID) + "\",";
+    msg += "\"id\":\"" + String(DEVICE_ID) + "\"";
 
-    // RTC string
-    msg += "\"rtc\":\"";
+    // RTC
+    msg += ",\"rtc\":\"";
     msg += String(nowRtc.year()) + "-";
     if (nowRtc.month() < 10) msg += "0";
     msg += String(nowRtc.month()) + "-";
@@ -204,74 +242,48 @@ void loop() {
     if (nowRtc.minute() < 10) msg += "0";
     msg += String(nowRtc.minute()) + ":";
     if (nowRtc.second() < 10) msg += "0";
-    msg += String(nowRtc.second()) + "\",";
+    msg += String(nowRtc.second());
+    msg += "\"";
 
     // 32K por PPS
-    msg += "\"rtc32k_cycles\":" + String((unsigned long)last32kCycles) + ",";
-    msg += "\"rtc32k_err\":" + String((long)((int32_t)last32kCycles - 32768)) + ",";
+    msg += ",\"rtc32k_cycles\":" + String((unsigned long)last32kCycles);
+    msg += ",\"rtc32k_err\":" + String((long)((int32_t)last32kCycles - 32768));
 
-    // contadores / métricas GNSS
-    msg += "\"txt\":" + String(gps.getTxtCount()) + ",";
-    msg += "\"rmc\":" + String(gps.getRmcCount()) + ",";
-    msg += "\"gga\":" + String(gps.getGgaCount()) + ",";
-    msg += "\"gga_sats\":" + String(gps.getGgaNumSats()) + ",";
-    msg += "\"gga_hdop\":" + String(gps.getGgaHdop(), 2) + ",";
-    msg += "\"gsa_fix\":" + String(gps.getGsaFixType()) + ",";
-    msg += "\"pdop\":" + String(gps.getGsaPdop(), 2) + ",";
-    msg += "\"hdop\":" + String(gps.getGsaHdop(), 2) + ",";
-    msg += "\"vdop\":" + String(gps.getGsaVdop(), 2) + ",";
-    msg += "\"otr\":" + String(gps.getOtherCount()) + ",";
+    // contadores NMEA + métricas
+    msg += ",\"txt\":" + String(gps.getTxtCount());
+    msg += ",\"rmc\":" + String(gps.getRmcCount());
+    msg += ",\"gga\":" + String(gps.getGgaCount());
+    msg += ",\"gga_sats\":" + String(gps.getGgaNumSats());
+    msg += ",\"gga_hdop\":" + String(gps.getGgaHdop(), 2);
+    msg += ",\"gsa_fix\":" + String(gps.getGsaFixType());
+    msg += ",\"pdop\":" + String(gps.getGsaPdop(), 2);
+    msg += ",\"hdop\":" + String(gps.getGsaHdop(), 2);
+    msg += ",\"vdop\":" + String(gps.getGsaVdop(), 2);
+    msg += ",\"otr\":" + String(gps.getOtherCount());
 
     // PPS
-    if (gps.getPpsPulseCount() > 0) {
-      msg += "\"pps_count\":" + String(gps.getPpsPulseCount()) + ",";
-      msg += "\"pps_period_us\":" + String(gps.getPpsPeriodUs()) + ",";
-      msg += "\"pps_last_us\":" + String(gps.getLastPpsUs()) + ",";
-    } else {
-      msg += "\"pps_count\":0,";
-      msg += "\"pps_period_us\":0,";
-      msg += "\"pps_last_us\":0,";
-    }
+    msg += ",\"pps_count\":" + String(gps.getPpsPulseCount());
+    msg += ",\"pps_period_us\":" + String(gps.getPpsPeriodUs());
+    msg += ",\"pps_last_us\":" + String(gps.getLastPpsUs());
 
-    // RMC local
-    msg += "\"rmc_valid\":";
+    // GPS local desde RMC
+    msg += ",\"rmc_valid\":";
     msg += gps.hasLastValidRmc() ? "true" : "false";
+
     if (gps.hasLastValidRmc()) {
       DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
       if (gps.getLastValidLocalDateTime(gpsLocal)) {
-        msg += ",\"gps_local\":\"";
-        msg += String(gpsLocal.year()) + "-";
-        if (gpsLocal.month() < 10) msg += "0";
-        msg += String(gpsLocal.month()) + "-";
-        if (gpsLocal.day() < 10) msg += "0";
-        msg += String(gpsLocal.day()) + " ";
-        if (gpsLocal.hour() < 10) msg += "0";
-        msg += String(gpsLocal.hour()) + ":";
-        if (gpsLocal.minute() < 10) msg += "0";
-        msg += String(gpsLocal.minute()) + ":";
-        if (gpsLocal.second() < 10) msg += "0";
-        msg += String(gpsLocal.second()) + "\"";
+        appendDateTimeJson(msg, "gps_local", gpsLocal);
         msg += ",\"rmc_age_ms\":" + String(gps.getLastValidRmcAgeMs());
       }
     }
 
-    // GNSS@PPS estable
+    // GNSS @ PPS (latch)
     msg += ",\"gps_pps_valid\":";
     msg += haveGpsPpsLocal ? "true" : "false";
 
     if (haveGpsPpsLocal) {
-      msg += ",\"gps_pps_local\":\"";
-      msg += String(gpsPpsLocal.year()) + "-";
-      if (gpsPpsLocal.month() < 10) msg += "0";
-      msg += String(gpsPpsLocal.month()) + "-";
-      if (gpsPpsLocal.day() < 10) msg += "0";
-      msg += String(gpsPpsLocal.day()) + " ";
-      if (gpsPpsLocal.hour() < 10) msg += "0";
-      msg += String(gpsPpsLocal.hour()) + ":";
-      if (gpsPpsLocal.minute() < 10) msg += "0";
-      msg += String(gpsPpsLocal.minute()) + ":";
-      if (gpsPpsLocal.second() < 10) msg += "0";
-      msg += String(gpsPpsLocal.second()) + "\"";
+      appendDateTimeJson(msg, "gps_pps_local", gpsPpsLocal);
 
       long diff_s = (long)nowRtc.unixtime() - (long)gpsPpsLocal.unixtime();
       msg += ",\"rtc_minus_gpspps_s\":" + String(diff_s);

@@ -10,9 +10,9 @@ public:
                      pcnt_unit_t unit = PCNT_UNIT_0,
                      pcnt_channel_t ch = PCNT_CHANNEL_0);
 
-  bool begin(uint16_t filterTicks = 0); // ~5us aprox (ajustable)
-  uint32_t readAndReset();               // ciclos 32k desde el último reset
-  uint32_t getOverflowCount();           // debug
+  bool begin(uint16_t filterTicks = 0);
+  uint32_t readAndReset();
+  uint32_t getOverflowCount();
 
 private:
   int _pin;

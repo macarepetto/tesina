@@ -13,7 +13,7 @@ GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin,
 void GPS_Module::begin() {
     _serial.begin(_baud, SERIAL_8N1, _rxPin, _txPin);
 
-    pinMode(_ppsPin, INPUT);
+    pinMode(_ppsPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(_ppsPin), ppsISR, RISING);
 }
 
