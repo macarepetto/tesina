@@ -1,6 +1,7 @@
 #include "RTC_Module.h"
 
 volatile unsigned long RTC_Module::_sqwPulses = 0;
+volatile unsigned long RTC_Module::_sqwLastUs = 0; // NUEVA INICIALIZACIÓN
 
 RTC_Module::RTC_Module(int sdaPin, int sclPin, int sqwPin)
     : _sdaPin(sdaPin), _sclPin(sclPin), _sqwPin(sqwPin) {}
@@ -12,21 +13,15 @@ bool RTC_Module::begin() {
         return false;
     }
 
-    // ===== SQW opcional =====
-    // Si sqwPin < 0, no configuramos SQW ni attachInterrupt.
     if (_sqwPin >= 0) {
-        // OJO: esta línea depende de que el módulo/placa responda bien.
-        // Si más adelante querés probar:
-        // _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
-        // _rtc.writeSqwPinMode(DS3231_SquareWave1kHz);
-        // _rtc.writeSqwPinMode(DS3231_SquareWave4kHz);
-        // _rtc.writeSqwPinMode(DS3231_SquareWave8kHz);
-        //
-        // Por ahora NO la activamos para no interferir con el pin 32K/PCNT.
-        // _rtc.writeSqwPinMode(DS3231_SquareWave1kHz);
+        // 1. Encendemos la onda cuadrada a 1Hz en el DS3231
+        _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
 
-        pinMode(_sqwPin, INPUT); // sin pullup por defecto (SQW suele ser push-pull)
-        attachInterrupt(digitalPinToInterrupt(_sqwPin), sqwISR, RISING);
+        // 2. Configuramos el pin del ESP32 con PULLUP
+        pinMode(_sqwPin, INPUT_PULLUP); 
+        
+        // 3. El inicio del segundo en el DS3231 ocurre en el flanco de BAJADA
+        attachInterrupt(digitalPinToInterrupt(_sqwPin), sqwISR, FALLING); 
     }
 
     return true;
@@ -52,10 +47,19 @@ unsigned long RTC_Module::getSqwPulses() {
     return value;
 }
 
+// NUEVO: Función que devuelve el timestamp de forma segura
+unsigned long RTC_Module::getLastSqwUs() const {
+    noInterrupts();
+    unsigned long value = _sqwLastUs;
+    interrupts();
+    return value;
+}
+
 int RTC_Module::getSqwPin() const {
     return _sqwPin;
 }
 
 void IRAM_ATTR RTC_Module::sqwISR() {
+    _sqwLastUs = micros(); // NUEVO: Capturamos el tiempo exacto
     _sqwPulses++;
 }

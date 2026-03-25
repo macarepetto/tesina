@@ -16,6 +16,9 @@ public:
 
     unsigned long getSqwPulses();
     int getSqwPin() const;
+    
+    // NUEVO: Getter para el timestamp en microsegundos
+    unsigned long getLastSqwUs() const; 
 
 private:
     int _sdaPin;
@@ -25,6 +28,7 @@ private:
     RTC_DS3231 _rtc;
 
     static volatile unsigned long _sqwPulses;
+    static volatile unsigned long _sqwLastUs; // NUEVO: Guarda el valor de micros()
 
     static void IRAM_ATTR sqwISR();
 };

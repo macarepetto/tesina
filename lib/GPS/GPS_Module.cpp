@@ -13,6 +13,8 @@ GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin,
 void GPS_Module::begin() {
     _serial.begin(_baud, SERIAL_8N1, _rxPin, _txPin);
 
+    // Si estás usando GPIO27/32 para poder pullup interno, esto está perfecto.
+    // OJO: PPS normalmente es push-pull, el pullup interno no molesta.
     pinMode(_ppsPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(_ppsPin), ppsISR, RISING);
 }
@@ -103,12 +105,16 @@ void GPS_Module::processSentence(const String& line) {
         _haveLastValidRmc = true;
         _lastValidRmcMs = millis();
 
-        // Guardar también como DateTime local + snapshot del contador PPS
+        // Base GNSS@PPS: guardo DateTime local y snapshot consistente del contador PPS
         DateTime loc(2000,1,1,0,0,0);
         if (rmcToLocalDateTimeUTCminus3(r, loc)) {
             _lastRmcLocal = loc;
             _haveLastRmcLocal = true;
-            _ppsCountAtLastRmc = getPpsPulseCount(); // snapshot consistente
+
+            noInterrupts();
+            unsigned long snap = _ppsPulses;
+            interrupts();
+            _ppsCountAtLastRmc = snap;
         }
     }
 
@@ -150,7 +156,7 @@ bool GPS_Module::parseRMC(const String& s, RmcData& out) {
 
     out.valid = (status.length() > 0 && status[0] == 'A');
 
-    // hhmmss.sss -> tomamos hhmmss
+    // hhmmss.ss -> tomamos hhmmss (segundos enteros)
     if (timeStr.length() >= 6) {
         out.hour   = timeStr.substring(0, 2).toInt();
         out.minute = timeStr.substring(2, 4).toInt();
@@ -212,10 +218,14 @@ unsigned long GPS_Module::getLastValidRmcAgeMs() const {
 
 // ===== GNSS @ PPS estable =====
 bool GPS_Module::getGpsLocalAtPps(DateTime& outLocal) const {
+    // Necesito una base (RMC válida convertida a local) + PPS andando
     if (!_haveLastRmcLocal) return false;
 
     unsigned long ppsNow = getPpsPulseCount();
-    if (ppsNow < _ppsCountAtLastRmc) return false; // por seguridad
+    if (ppsNow == 0) return false;
+
+    // Si por alguna razón ppsNow “retrocede” (reset), no extrapolo
+    if (ppsNow < _ppsCountAtLastRmc) return false;
 
     uint32_t t = _lastRmcLocal.unixtime();
     t += (uint32_t)(ppsNow - _ppsCountAtLastRmc);
