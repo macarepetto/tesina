@@ -91,16 +91,19 @@ static int toIntSafe(String x) {
 void GPS_Module::processSentence(const String& line) {
     if (line.length() < 6) return;
 
-    // Contadores por prefijo
-    if (line.startsWith("$GPTXT") || line.startsWith("$GNTXT")) _cntTXT++;
-    else if (line.startsWith("$GPRMC") || line.startsWith("$GNRMC")) _cntRMC++;
-    else if (line.startsWith("$GPGGA") || line.startsWith("$GNGGA")) _cntGGA++;
-    else if (line.startsWith("$GPGSA") || line.startsWith("$GNGSA")) _cntGSA++;
+    // Extraemos mágicamente las 3 letras del tipo de mensaje, ignorando si es GP, GN, GL, etc.
+    String type = line.substring(3, 6); 
+
+    // Contadores por tipo de mensaje real
+    if (type == "TXT") _cntTXT++;
+    else if (type == "RMC") _cntRMC++;
+    else if (type == "GGA") _cntGGA++;
+    else if (type == "GSA") _cntGSA++;
     else _cntOTROS++;
 
-    // ---- Parse RMC (solo GP/GN) ----
+    // ---- Parse RMC (Cualquier constelación) ----
     RmcData r;
-    if (parseRMC(line, r) && rmcEsRazonable(r)) {
+    if (type == "RMC" && parseRMC(line, r) && rmcEsRazonable(r)) {
         _lastValidRmc = r;
         _haveLastValidRmc = true;
         _lastValidRmcMs = millis();
@@ -119,13 +122,13 @@ void GPS_Module::processSentence(const String& line) {
     }
 
     // ---- Parse GGA: num sats + HDOP ----
-    if (line.startsWith("$GPGGA") || line.startsWith("$GNGGA")) {
+    if (type == "GGA") {
         _ggaNumSats = toIntSafe(nmeaField(line, 7));
         _ggaHdop    = toFloatSafe(nmeaField(line, 8));
     }
 
     // ---- Parse GSA: fix type + PDOP/HDOP/VDOP ----
-    if (line.startsWith("$GPGSA") || line.startsWith("$GNGSA")) {
+    if (type == "GSA") {
         _gsaFixType = toIntSafe(nmeaField(line, 2));
         _gsaPdop    = toFloatSafe(nmeaField(line, 15));
         _gsaHdop    = toFloatSafe(nmeaField(line, 16));
@@ -134,7 +137,8 @@ void GPS_Module::processSentence(const String& line) {
 }
 
 bool GPS_Module::parseRMC(const String& s, RmcData& out) {
-    if (!(s.startsWith("$GPRMC") || s.startsWith("$GNRMC"))) return false;
+    // Validación agnóstica: si no tiene al menos 6 caracteres o no es RMC, se ignora
+    if (s.length() < 6 || s.substring(3, 6) != "RMC") return false;
 
     int commas[32];
     int n = 0;
