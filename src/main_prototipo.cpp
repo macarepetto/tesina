@@ -7,7 +7,7 @@
 #include "WiFi_Module.h"
 #include "RTC32K_Pcnt_Module.h"
 
-// Librerías de FreeRTOS (Para el Dual Core y las Colas)
+// FreeRTOS (Dual Core + Queue)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -15,28 +15,13 @@
 // ================== Pines RTC ==================
 const int PIN_SDA_RTC = 21;
 const int PIN_SCL_RTC = 22;
-const int PIN_SQW_RTC = 19;     // SQW a 1Hz en GPIO19 (permite INPUT_PULLUP)
-const int PIN_32K_RTC = 18;     // 32K del DS3231 -> GPIO32
+const int PIN_SQW_RTC = 19;     // SQW 1Hz en GPIO19
+const int PIN_32K_RTC = 23;     // <<< 32K del DS3231 -> GPIO23 (cambiá si usás otro)
 
 // ================== Pines GPS ==================
 const int GPS_RX  = 16;
 const int GPS_TX  = 17;
 const int GPS_PPS = 27;         // PPS GPS -> GPIO27
-
-// ================== Botón ==================
-const int PIN_BOTON = 33;
-
-volatile bool boton_pressed = false;
-volatile unsigned long lastPressTime = 0;
-const unsigned long DEBOUNCE_DELAY = 50;
-
-void IRAM_ATTR buttonISR() {
-  unsigned long now = millis();
-  if (now - lastPressTime > DEBOUNCE_DELAY) {
-    boton_pressed = true;
-    lastPressTime = now;
-  }
-}
 
 // ================== WiFi / servidor ==================
 const char* WIFI_SSID     = "PATAN";
@@ -51,26 +36,25 @@ GPS_Module gps(Serial2, GPS_RX, GPS_TX, GPS_PPS, 9600);
 WiFi_Module telemetry(WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT, DEVICE_ID);
 RTC32K_Pcnt_Module rtc32k(PIN_32K_RTC);
 
-// ================== Objetos de FreeRTOS ==================
-QueueHandle_t telemetryQueue; // El "buzón" entre los dos núcleos
-void tareaWiFi(void *pvParameters); // Declaración de la tarea del Core 0
+// ================== Dual core ==================
+QueueHandle_t telemetryQueue;
+void tareaWiFi(void *pvParameters);
 
 // ================== Estado derivado ==================
 static unsigned long lastPps = 0;
 static uint32_t last32kCycles = 0;
 
-// Gatillo para el envío por hardware
+// Gatillo SQW para enviar logs 1 vez por segundo
 static unsigned long lastSqwTrigger = 0;
 
-// Gatillo para sincronización exacta
-static bool pending_rtc_sync = false;
+// Sync event (para marcar en logs cuando se ajustó el RTC)
 static bool flag_sync_event = false;
 
-// Variables para el offset fino
+// Offset fino PPS vs SQW
 static long offset_us = 0;
 static bool offset_valid = false;
 
-// “Latch” GNSS@PPS y RTC@PPS
+// GNSS@PPS y RTC@PPS
 static bool haveGpsPpsLocal = false;
 static DateTime gpsPpsLocal(2000, 1, 1, 0, 0, 0);
 
@@ -80,17 +64,20 @@ static DateTime rtcAtPps(2000, 1, 1, 0, 0, 0);
 static bool haveDiffAtPps = false;
 static long rtcMinusGpsPps_s = 0;
 
-// ================== Funciones Alta Precisión ==================
+// ===== Auto-sync ONE SHOT =====
+static bool rtc_synced_once = false;
+
+// ================== Funciones "precisas" ==================
 uint32_t getRtcMicros() {
-    unsigned long lastSqw = rtc.getLastSqwUs();
-    if (lastSqw == 0) return 0;
-    return (uint32_t)(micros() - lastSqw) % 1000000UL; 
+  unsigned long lastSqw = rtc.getLastSqwUs();
+  if (lastSqw == 0) return 0;
+  return (uint32_t)(micros() - lastSqw) % 1000000UL;
 }
 
 uint32_t getGpsMicros() {
-    unsigned long lastPps = gps.getLastPpsUs();
-    if (lastPps == 0) return 0;
-    return (uint32_t)(micros() - lastPps) % 1000000UL;
+  unsigned long lastPpsUs = gps.getLastPpsUs();
+  if (lastPpsUs == 0) return 0;
+  return (uint32_t)(micros() - lastPpsUs) % 1000000UL;
 }
 
 static void appendDateTimeJson(String& msg, const char* key, const DateTime& dt) {
@@ -122,7 +109,7 @@ void setup() {
     while (true) delay(1000);
   }
 
-  // Agrandamos el buffer del GPS para evitar embotellamientos
+  // Buffer grande para UART GPS
   Serial2.setRxBufferSize(1024);
   gps.begin();
 
@@ -134,67 +121,73 @@ void setup() {
   }
 
   telemetry.begin();
-  
-  pinMode(PIN_BOTON, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_BOTON), buttonISR, FALLING);
 
-  // ================== CONFIGURACIÓN DUAL CORE ==================
-  // 1. Creamos el buzón (Queue) con capacidad para 10 mensajes
+  // ===== Dual core / Queue =====
   telemetryQueue = xQueueCreate(10, sizeof(String*));
 
-  // 2. Creamos la Tarea WiFi y la anclamos estrictamente al CORE 0
   xTaskCreatePinnedToCore(
-    tareaWiFi,        // Función de la tarea
-    "TareaWiFi",      // Nombre para debug
-    8192,             // Tamaño de la pila (Stack)
-    NULL,             // Parámetros
-    1,                // Prioridad
-    NULL,             // Handle
-    0                 // <--- NÚCLEO 0
+    tareaWiFi,
+    "TareaWiFi",
+    8192,
+    NULL,
+    1,
+    NULL,
+    0
   );
 
   Serial.println("Setup OK. Esperando satélites...");
 }
 
-// ======================================================================
-// === CORE 0: ESTA TAREA SE ENCARGA EXCLUSIVAMENTE DEL WIFI Y TCP ====
-// ======================================================================
+// ===== CORE 0: WiFi/TCP =====
 void tareaWiFi(void *pvParameters) {
   String* msgRecibido;
-  
+
   for(;;) {
-    // Mantener la conexión activa (si se cae el WiFi, se frena ACÁ, no afecta al reloj)
-    telemetry.update(); 
-    
-    // Revisar el buzón. Espera hasta 10ms para ver si el loop() mandó un JSON nuevo
+    telemetry.update();
+
     if (xQueueReceive(telemetryQueue, &msgRecibido, 10 / portTICK_PERIOD_MS) == pdPASS) {
-      telemetry.sendLine(*msgRecibido); // Enviar por TCP
-      delete msgRecibido;               // ¡Muy importante! Liberar la memoria RAM
+      telemetry.sendLine(*msgRecibido);
+      delete msgRecibido;
     }
   }
 }
 
-// ======================================================================
-// === CORE 1: ESTE LOOP ES EL "MASTER" DE TIEMPO REAL ==================
-// ======================================================================
+// ===== CORE 1: Metrología =====
 void loop() {
   gps.update();
 
-  // ===== BOTON: Solo arma el gatillo =====
-  if (boton_pressed) {
-    boton_pressed = false;
-    if (gps.hasValidRmcRecent(1200)) { 
-        pending_rtc_sync = true;
+  // ======================================================
+  // AUTO-SYNC RTC (UNA SOLA VEZ) cuando haya RMC válida + PPS estable
+  // ======================================================
+  if (!rtc_synced_once) {
+    // 1) RMC válida reciente
+    DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
+    bool haveRmc = gps.hasValidRmcRecent(1200) && gps.getLastValidLocalDateTime(gpsLocal);
+
+    // 2) PPS estable (al menos 3 pulsos + periodo cerca de 1s)
+    bool havePps = (gps.getPpsPulseCount() >= 3);
+    unsigned long T = gps.getPpsPeriodUs();
+    bool ppsStable = (T >= 990000UL && T <= 1010000UL);
+
+    if (haveRmc && havePps && ppsStable) {
+      rtc.adjust(gpsLocal);
+      rtc_synced_once = true;
+      flag_sync_event = true;
+      Serial.println("[AUTO-SYNC] RTC ajustado 1 vez con GNSS valido.");
+      // no return: dejamos que siga midiendo normal
     }
   }
 
-  // ===== PPS: Si llega PPS nuevo, leemos 32K y latcheamos tiempos =====
-  unsigned long pps = gps.getPpsPulseCount();
-  if (pps > 0 && pps != lastPps) {
-    lastPps = pps;
+  // ======================================================
+  // PPS: Si llega PPS nuevo, leemos 32K y latcheamos tiempos
+  // ======================================================
+  unsigned long ppsCount = gps.getPpsPulseCount();
+  if (ppsCount > 0 && ppsCount != lastPps) {
+    lastPps = ppsCount;
 
+    // GNSS@PPS (segundo entero) desde última RMC válida (tu método actual)
     haveGpsPpsLocal = false;
-    if (gps.hasValidRmcRecent(1200)) { 
+    if (gps.hasValidRmcRecent(1200)) {
       DateTime lastGpsLocal(2000, 1, 1, 0, 0, 0);
       if (gps.getLastValidLocalDateTime(lastGpsLocal)) {
         gpsPpsLocal = DateTime(lastGpsLocal.unixtime() + 1);
@@ -202,30 +195,22 @@ void loop() {
       }
     }
 
-    // --- EJECUCIÓN DEL GATILLO DE SINCRONIZACIÓN FINA ---
-    if (pending_rtc_sync && haveGpsPpsLocal) {
-        rtc.adjust(gpsPpsLocal);
-        pending_rtc_sync = false;
-        flag_sync_event = true; 
-        return; 
-    }
-
-    // --- CÁLCULOS DE ERROR TEMPORAL Y DERIVA ---
+    // 32K cycles durante el segundo PPS
     uint32_t cycles = rtc32k.readAndReset();
     if (cycles >= 30000UL && cycles <= 36000UL) {
       last32kCycles = cycles;
     }
 
+    // Offset SQW vs PPS (en micros)
     unsigned long pps_us = gps.getLastPpsUs();
     unsigned long sqw_us = rtc.getLastSqwUs();
 
     long diff = (long)(sqw_us - pps_us);
-
     if (abs(diff) < 500000L) {
-        offset_us = diff;
-        offset_valid = true;
+      offset_us = diff;
+      offset_valid = true;
     } else {
-        offset_valid = false;
+      offset_valid = false;
     }
 
     rtcAtPps = rtc.now();
@@ -237,16 +222,17 @@ void loop() {
     }
   }
 
-  // ===== DETECCIÓN DE PÉRDIDA DE SEÑAL GNSS (WATCHDOG) =====
+  // Watchdog GNSS
   if (micros() - gps.getLastPpsUs() > 1500000UL) {
-      offset_valid = false;  
-      haveDiffAtPps = false; 
-      pending_rtc_sync = false; 
+    offset_valid = false;
+    haveDiffAtPps = false;
   }
 
-  // ===== ARMADO DE LOGS GUIADO POR EL SQW (Como pidió el profe) ====
+  // ======================================================
+  // LOGS guiados por SQW (1Hz)
+  // ======================================================
   unsigned long currentSqw = rtc.getSqwPulses();
-  
+
   if (currentSqw > 0 && currentSqw != lastSqwTrigger) {
     lastSqwTrigger = currentSqw;
 
@@ -261,10 +247,14 @@ void loop() {
     msg += flag_sync_event ? "true" : "false";
     flag_sync_event = false;
 
+    msg += ",\"rtc_synced_once\":";
+    msg += rtc_synced_once ? "true" : "false";
+
     appendDateTimeJson(msg, "rtc", nowRtc);
 
     char rtcPreciseBuf[32];
-    sprintf(rtcPreciseBuf, "%02d:%02d:%02d.%06lu", nowRtc.hour(), nowRtc.minute(), nowRtc.second(), (unsigned long)rtcUs);
+    sprintf(rtcPreciseBuf, "%02d:%02d:%02d.%06lu",
+            nowRtc.hour(), nowRtc.minute(), nowRtc.second(), (unsigned long)rtcUs);
     msg += ",\"rtc_precisa\":\"" + String(rtcPreciseBuf) + "\"";
 
     msg += ",\"rtc32k_cycles\":" + String((unsigned long)last32kCycles);
@@ -272,9 +262,7 @@ void loop() {
 
     msg += ",\"offset_valid\":";
     msg += offset_valid ? "true" : "false";
-    if (offset_valid) {
-      msg += ",\"offset_us\":" + String(offset_us);
-    }
+    if (offset_valid) msg += ",\"offset_us\":" + String(offset_us);
 
     msg += ",\"txt\":" + String(gps.getTxtCount());
     msg += ",\"rmc\":" + String(gps.getRmcCount());
@@ -298,42 +286,40 @@ void loop() {
       DateTime gpsLocal(2000, 1, 1, 0, 0, 0);
       if (gps.getLastValidLocalDateTime(gpsLocal)) {
         appendDateTimeJson(msg, "gps_local", gpsLocal);
-        
+
         char gpsPreciseBuf[32];
-        sprintf(gpsPreciseBuf, "%02d:%02d:%02d.%06lu", gpsLocal.hour(), gpsLocal.minute(), gpsLocal.second(), (unsigned long)gpsUs);
+        sprintf(gpsPreciseBuf, "%02d:%02d:%02d.%06lu",
+                gpsLocal.hour(), gpsLocal.minute(), gpsLocal.second(), (unsigned long)gpsUs);
         msg += ",\"gps_precisa\":\"" + String(gpsPreciseBuf) + "\"";
-        
+
         msg += ",\"rmc_age_ms\":" + String(gps.getLastValidRmcAgeMs());
       }
     }
 
     msg += ",\"gps_pps_valid\":";
     msg += haveGpsPpsLocal ? "true" : "false";
+
     if (haveGpsPpsLocal) {
       appendDateTimeJson(msg, "gps_pps_local", gpsPpsLocal);
-      
+
       int64_t rtc_total_us = (int64_t)nowRtc.unixtime() * 1000000LL + rtcUs;
       int64_t gps_total_us = (int64_t)gpsPpsLocal.unixtime() * 1000000LL + gpsUs;
       int64_t error_absoluto_us = rtc_total_us - gps_total_us;
 
-      char errBuf[128];
-      snprintf(errBuf, sizeof(errBuf), ",\"error_total_us\":%lld,\"error_total_s\":%.6f", 
-               error_absoluto_us, 
+      char errBuf[160];
+      snprintf(errBuf, sizeof(errBuf),
+               ",\"error_total_us\":%lld,\"error_total_s\":%.6f",
+               error_absoluto_us,
                (double)error_absoluto_us / 1000000.0);
       msg += String(errBuf);
     }
 
     msg += "}\n";
 
-    // ================================================================
-    // >>> ENVÍO DE DATOS AL CORE 0 (Metiendo el mensaje en el buzón)
-    // ================================================================
-    String* msgPtr = new String(msg); // Creamos un paquete dinámico
-    
-    // Si el buzón no está lleno, mandamos el puntero a la cola
+    // Enviar al core 0 via queue
+    String* msgPtr = new String(msg);
     if (xQueueSend(telemetryQueue, &msgPtr, 0) != pdPASS) {
-        // Si el buzón se llenó (porque el WiFi está súper caído), descartamos el paquete actual
-        delete msgPtr; 
+      delete msgPtr;
     }
   }
 }
