@@ -12,7 +12,6 @@ bool RTC_Module::begin() {
     if (!_rtc.begin()) {
         return false;
     }
-
     if (_sqwPin >= 0) {
         // 1. Encendemos la onda cuadrada a 1Hz en el DS3231
         _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
@@ -23,7 +22,6 @@ bool RTC_Module::begin() {
         // 3. El inicio del segundo en el DS3231 ocurre en el flanco de BAJADA
         attachInterrupt(digitalPinToInterrupt(_sqwPin), sqwISR, FALLING); 
     }
-
     return true;
 }
 
