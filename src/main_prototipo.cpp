@@ -16,7 +16,7 @@
 const int PIN_SDA_RTC = 21;
 const int PIN_SCL_RTC = 22;
 const int PIN_SQW_RTC = 19;     // SQW 1Hz en GPIO19
-const int PIN_32K_RTC = 23;     // <<< 32K del DS3231 -> GPIO23 (cambiá si usás otro)
+const int PIN_32K_RTC = 18;     // <<< 32K del DS3231 -> GPIO23 (cambiá si usás otro)
 
 // ================== Pines GPS ==================
 const int GPS_RX  = 16;

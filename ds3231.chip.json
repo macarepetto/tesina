@@ -1,0 +1,13 @@
+{
+    "name": "DS3231 RTC Module",
+    "author": "Macarena Repetto",
+    "pins": [
+      "VCC",
+      "GND",
+      "SCL",
+      "SDA",
+      "SQW",
+      "32K"
+    ],
+    "controls": []
+  }

@@ -52,7 +52,7 @@ bool RTC32K_Pcnt_Module::begin(uint16_t filterTicks) {
 
   // Evitar duplicar handler si reiniciás
   pcnt_isr_handler_remove(_unit);
-  if (pcnt_isr_handler_add(_unit, pcntIsr, (void*)_unit) != ESP_OK) return false;
+  if (pcnt_isr_handler_add(_unit, pcntISR, (void*)_unit) != ESP_OK) return false;
 
   _acc[_unit] = 0;
   pcnt_counter_resume(_unit);
@@ -67,7 +67,7 @@ bool RTC32K_Pcnt_Module::evtHit(uint32_t st, pcnt_evt_type_t evt) {
   return false;
 }
 
-void IRAM_ATTR RTC32K_Pcnt_Module::pcntIsr(void* arg) {
+void IRAM_ATTR RTC32K_Pcnt_Module::pcntISR(void* arg) {
   const pcnt_unit_t unit = (pcnt_unit_t)(uint32_t)arg;
 
   uint32_t st = 0;

@@ -29,7 +29,7 @@ private:
   static bool _isrServiceInstalled;
 
   static bool evtHit(uint32_t st, pcnt_evt_type_t evt);
-  static void IRAM_ATTR pcntIsr(void* arg);
+  static void IRAM_ATTR pcntISR(void* arg);
 };
 
 #endif

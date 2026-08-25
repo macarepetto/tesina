@@ -1,0 +1,12 @@
+[wokwi]
+version = 1
+firmware = ".pio/build/kalman/firmware.bin"
+elf = ".pio/build/kalman/firmware.elf"
+
+[[chip]]
+name = "ds3231"
+binary = "chips/ds3231.chip.wasm"
+
+[[chip]]
+name = "neo6m"
+binary = "chips/neo6m.chip.wasm"

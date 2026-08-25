@@ -1,0 +1,12 @@
+{
+    "name": "GNSS NEO-6M",
+    "author": "Macarena Repetto",
+    "pins": [
+      "VCC",
+      "GND",
+      "TX",
+      "RX",
+      "1PPS"
+    ],
+    "controls": []
+  }

@@ -1,0 +1,43 @@
+{
+    "version": 1,
+    "author": "Macarena Repetto",
+    "editor": "wokwi",
+    "parts": [
+      {
+        "type": "board-esp32-devkit-c-v4",
+        "id": "esp",
+        "top": 0,
+        "left": 0,
+        "attrs": {}
+      },
+      {
+        "type": "chip-ds3231",
+        "id": "rtc",
+        "top": -120,
+        "left": 330,
+        "attrs": {}
+      },
+      {
+        "type": "chip-neo6m",
+        "id": "gnss",
+        "top": 160,
+        "left": 330,
+        "attrs": {}
+      }
+    ],
+    "connections": [
+        ["rtc:VCC", "esp:3V3", "#FF0000", []],
+        ["rtc:GND", "esp:GND", "#8B4513", []],
+        ["rtc:SDA", "esp:21", "#800080", []],
+        ["rtc:SCL", "esp:22", "#0000FF", []],
+        ["rtc:SQW", "esp:19", "#008000", []],
+        ["rtc:32K", "esp:18", "#FFA500", []],
+        
+        ["gnss:VCC", "esp:3V3", "#FF0000", []],
+        ["gnss:GND", "esp:GND", "#8B4513", []],
+        ["gnss:TX", "esp:16", "#800080", []],
+        ["gnss:RX", "esp:17", "#0000FF", []],
+        ["gnss:1PPS", "esp:27", "#FFA500", []]
+    ],
+    "dependencies": {}
+  }
