@@ -1,144 +1,237 @@
-#ifndef KALMAN_CLOCK_H
-#define KALMAN_CLOCK_H
+#ifndef KALMAN_FILTER_H
+#define KALMAN_FILTER_H
 
 #include <Arduino.h>
 
 /*
-    Filtro de Kalman para estimar el error de un RTC usando conteo de ticks.
-
-
-    Convención usada:
-        f(k) = t_rtc - t_GPS = skew[ticks]
-        phi(k) = T_RTC - T_GPS = offset[ticks]
-
-    donde:
-        t_rtc = ticks contados en 1 PPS
-        t_gps = 32768 (cantidad del GPS)
-        T_GPS = ticks acumulados ideales según el PPS
-        T_RTC = ticks acumulados medidos del RTC
-
-    Entonces:
-        phi > 0  => faltaron ticks => RTC lento
-        phi < 0  => sobraron ticks => RTC rápido
+    Traducción directa del apunte de Kalman.
 
     Estado:
-        x(k) = [ phi ]
-               [  f  ]
-        
-        w(k) = [ w(phi) ]
-               [  w(f)  ]
+
+        x = [ phi ]
+            [  f  ]
 
     Modelo:
-        phi(k+1) = phi(k) + f(k) * pps_steps + w(phi)
-        f(k+1)   = f(k) + w(f)
 
         x(k+1) = F x(k) + w(k)
 
-        
+        phi(k+1) = phi(k) + f(k) + w_phi
+        f(k+1)   = f(k) + w_f
 
+        F = [1 1]
+            [0 1]
 
-    Si se procesa un PPS por vez:
-        pps_steps = 1
+    Ruido del proceso:
 
-    Si el loop procesa varios PPS juntos:
-        pps_steps = seq_delta
+        w ~ N(0, Q)
 
-    Medición usada:
-        z = offset_ticks
+        Q = E[w w^T]
 
-    Por eso:
-        H = [1 0]
+        Q = [ sigma_phi^2      0      ]
+            [      0       sigma_f^2 ]
+
+    Medición:
+
+        z = H x + v
+
+        v ~ N(0, R)
+
+        R = E[v v^T]
+
+    Predicción:
+
+        x_pred(k) = F x_pred(k-1)
+        P_pred(k) = F P_pred(k-1) F^T + Q
+
+    Error de Estimación:
+
+        e  = x - x_pred
+
+    Innovación:
+
+        y = z - H x_pred
+        S = H P_pred H^T + R
+
+    Actualización:
+
+        K = P_pred H^T S^-1
+        x = x_pred + K y
+        P = (I - K H) P_pred
 */
 
-struct Kalman_Filter_Config {
-    // Ruido del proceso para phi.
-    // Unidad: ticks^2 por paso PPS.
-    double q_w_phi = 0.001;
+struct Kalman_Config {
+    /*
+        Q = [ q_phi  0   ]
+            [  0    q_f ]
 
-    // Ruido del proceso para f.
-    // Unidad: (ticks/PPS)^2 por paso PPS.
-    double q_w_f = 0.000001;
+        q_phi = sigma_phi^2
+        q_f   = sigma_f^2
 
-    // Ruido de medición de phi.
-    // Unidad: ticks^2.
-    // 0.25 equivale a sigma = 0.5 tick.
-    double r_phi_ticks2 = 0.25;
+        Representan el ruido del modelo.
+    */
+    double q_phi = 0.001;
+    double q_f   = 0.000001;
 
-    // Incertidumbre inicial del offset.
-    // Unidad: ticks^2.
-    double p_phi0_ticks2 = 100.0;
+    /*
+        R para el caso en que se mide phi:
 
-    // Incertidumbre inicial del skew.
-    // Unidad: (ticks/PPS)^2.
-    double p_f0_ticks_per_pps2 = 1.0;
+            z = phi
+            H = [1 0]
+            R = r_phi
+    */
+    double r_phi = 0.25;
+
+    /*
+        R para el caso en que se mide f:
+
+            z = f
+            H = [0 1]
+            R = r_f
+    */
+    double r_f = 0.25;
+
+    /*
+        P inicial:
+
+            P = E[e e^T]
+
+        donde:
+
+            e = x_real - x_pred
+
+        P representa la incertidumbre de la estimación.
+    */
+    double p_phi_0 = 100.0;
+    double p_f_0   = 1.0;
 };
 
-struct Kalman_Filter_State {
-    double phi_ticks = 0.0;
-    double f_ticks_per_pps = 0.0;
+struct Kalman_State {
+    /*
+        x = [ phi ]
+            [  f  ]
+    */
+    double phi = 0.0;
+    double f   = 0.0;
 
-    // Matriz de covarianza P:
-    // [ p00 p01 ]
-    // [ p10 p11 ]
+    /*
+        P = [ p00 p01 ]
+            [ p10 p11 ]
+    */
     double p00 = 0.0;
     double p01 = 0.0;
     double p10 = 0.0;
     double p11 = 0.0;
 
-    // Innovación: y = z - H*x_pred
-    double innovation_ticks = 0.0;
+    /*
+        Innovación:
 
-    // Covarianza de la innovación: S = H*P*H^T + R
-    double innovation_covariance = 0.0;
+            y = z - H x_pred
+    */
+    double y0 = 0.0;
+    double y1 = 0.0;
 
-    // Ganancia de Kalman:
-    // K = [ k_phi ]
-    //     [ k_f   ]
-    double k_phi = 0.0;
-    double k_f = 0.0;
+    /*
+        Ganancia de Kalman.
+
+        Si se mide una sola variable, K es columna:
+
+            K = [ k0 ]
+                [ k1 ]
+
+        Si se miden phi y f, K es matriz 2x2.
+    */
+    double k00 = 0.0;
+    double k01 = 0.0;
+    double k10 = 0.0;
+    double k11 = 0.0;
 };
 
 class Kalman_Filter {
 public:
-    explicit Kalman_Filter(const Kalman_Filter_Config& config = Kalman_Filter_Config());
+    explicit Kalman_Filter(const Kalman_Config& config = Kalman_Config());
 
-    void reset(
-        double initial_phi_ticks = 0.0,
-        double initial_f_ticks_per_pps = 0.0
-    );
+    void reset(double initial_phi = 0.0, double initial_f = 0.0);
 
-    void predict(double pps_steps);
+    /*
+        Predicción:
 
-    void updatePhi(double measured_phi_ticks);
+            x_pred(k) = F x_pred(k-1)
+            P_pred(k) = F P_pred(k-1) F^T + Q
 
-    void step(
-        double measured_phi_ticks,
-        double pps_steps
-    );
+        con:
 
-   Kalman_Filter_State getState() const;
+            F = [1 1]
+                [0 1]
+    */
+    void predict();
 
-    double getPhiTicks() const;
-    double getPhiMicroseconds() const;
+    /*
+        Medición de phi:
 
-    double getFTicksPerPps() const;
-    double getFPpmEquivalent() const;
+            z = phi
+            H = [1 0]
+            R = r_phi
+    */
+    void updatePhi(double z_phi);
+
+    /*
+        Medición de f:
+
+            z = f
+            H = [0 1]
+            R = r_f
+    */
+    void updateF(double z_f);
+
+    /*
+        Medición de phi y f:
+
+            z = [ phi ]
+                [  f  ]
+
+            H = [1 0]
+                [0 1]
+
+            R = [ r_phi   0  ]
+                [   0    r_f ]
+    */
+    void updatePhiAndF(double z_phi, double z_f);
+
+    Kalman_State getState() const;
 
 private:
-    Kalman_Filter_Config cfg;
+    Kalman_Config cfg;
 
+    /*
+        Estado estimado:
+
+            x_hat = [ phi ]
+                    [  f  ]
+    */
     double phi;
     double f;
 
+    /*
+        Matriz de covarianza del error de estimación:
+
+            P = [ p00 p01 ]
+                [ p10 p11 ]
+    */
     double p00;
     double p01;
     double p10;
     double p11;
 
-    double lastInnovation;
-    double lastS;
-    double lastKPhi;
-    double lastKF;
+    /*
+        Últimos valores guardados para mirar qué hizo el filtro.
+    */
+    double y0;
+    double y1;
+
+    double k00;
+    double k01;
+    double k10;
+    double k11;
 };
 
 #endif

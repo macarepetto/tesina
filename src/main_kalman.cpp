@@ -2,10 +2,13 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include "driver/pcnt.h"
+#include "Kalman_Filter.h"
 
+// ==================== PINES ====================
 #define PIN_32K_RTC 18
 #define PIN_PPS_GPS 27
 
+// ==================== PCNT ====================
 #define PCNT_UNIT_USED    PCNT_UNIT_0
 #define PCNT_CHANNEL_USED PCNT_CHANNEL_0
 
@@ -13,6 +16,7 @@
 #define PCNT_LOW_LIMIT -30000
 #define PPS_TIME_TOLERANCE_US 200000UL
 
+// ==================== AGING DS3231 ====================
 // Cambiar solamente esta línea para cada ensayo.
 static constexpr int8_t AGING_VALUE = -13;
 
@@ -23,6 +27,7 @@ static constexpr uint8_t REG_AGING = 0x10;
 static constexpr uint8_t BIT_CONV = 5;
 static constexpr uint8_t BIT_BSY = 2;
 
+// ==================== WIFI ====================
 const char* WIFI_SSID = "PATAN";
 const char* WIFI_PASS = "autoslocos";
 const char* SERVER_IP = "192.168.0.119";
@@ -31,6 +36,10 @@ const char* DEVICE_ID = "esp32-prototipo-1";
 
 WiFiClient client;
 
+// ==================== KALMAN ====================
+Kalman_Filter kalman;
+
+// ==================== VARIABLES COMPARTIDAS ISR / LOOP ====================
 portMUX_TYPE pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
 
 volatile uint32_t pcnt_base = 0;
@@ -44,16 +53,6 @@ int8_t aging_aplicado = 0;
 
 
 // ==================== I2C / DS3231 ====================
-
-/*
-   Nota:
-   No estamos midiendo temperatura ni usando temperatura para calcular el offset.
-
-   Después de escribir el registro de aging, se fuerza una actualización interna
-   del DS3231 usando el bit CONV. El nombre anterior de esta función era
-   forceTemperatureConversion(), pero para este ensayo es más claro llamarla
-   forceAgingUpdate().
-*/
 
 bool rtcWriteRegister(uint8_t reg, uint8_t value) {
     Wire.beginTransmission(DS3231_ADDRESS);
@@ -142,8 +141,6 @@ bool applyAgingValue(int8_t value) {
         return false;
     }
 
-    // La modificación se aplica inmediatamente al forzar
-    // una nueva ejecución del algoritmo de compensación.
     if (!forceAgingUpdate()) {
         return false;
     }
@@ -445,8 +442,34 @@ void loop() {
         const int64_t expected_ticks =
             (int64_t)32768 * (int64_t)seq_delta;
 
-        diff = expected_ticks - (int64_t)ticks_window;
+        // Convención del apunte:
+        //     phi = T_RTC - T_GPS
+        //     f   = t_RTC - t_GPS
+        diff = (int64_t)ticks_window - expected_ticks;
         offset_ticks += diff;
+    }
+
+    bool kalman_actualizado = false;
+    Kalman_State kalman_state;
+
+    if (interval_valid && seq_delta == 1) {
+        // Modelo del apunte, un paso por cada PPS:
+        //     x_pred = F x
+        //     P_pred = F P F^T + Q
+        kalman.predict();
+
+        // Medición del apunte:
+        //     z = [ phi ]
+        //         [  f  ]
+        //
+        //     H = [1 0]
+        //         [0 1]
+        const double z_phi = (double)offset_ticks;
+        const double z_f   = (double)diff;
+
+        kalman.updatePhiAndF(z_phi, z_f);
+        kalman_state = kalman.getState();
+        kalman_actualizado = true;
     }
 
     const uint32_t elapsed_seconds_rounded =
@@ -457,7 +480,7 @@ void loop() {
             ? elapsed_seconds_rounded - seq_delta
             : 0;
 
-    char json[470];
+    char json[900];
 
     snprintf(
         json,
@@ -477,7 +500,20 @@ void loop() {
         "\"interval_valid\":%s,"
         "\"missed_pps\":%lu,"
         "\"diff\":%lld,"
-        "\"offset_ticks\":%lld}",
+        "\"offset_ticks\":%lld,"
+        "\"kalman_actualizado\":%s,"
+        "\"kalman_phi\":%.6f,"
+        "\"kalman_f\":%.6f,"
+        "\"kalman_p00\":%.6f,"
+        "\"kalman_p01\":%.6f,"
+        "\"kalman_p10\":%.6f,"
+        "\"kalman_p11\":%.6f,"
+        "\"kalman_y0\":%.6f,"
+        "\"kalman_y1\":%.6f,"
+        "\"kalman_k00\":%.6f,"
+        "\"kalman_k01\":%.6f,"
+        "\"kalman_k10\":%.6f,"
+        "\"kalman_k11\":%.6f}",
         DEVICE_ID,
         (int)aging_aplicado,
         (unsigned long)millis(),
@@ -492,7 +528,20 @@ void loop() {
         interval_valid ? "true" : "false",
         (unsigned long)missed_pps,
         (long long)diff,
-        (long long)offset_ticks
+        (long long)offset_ticks,
+        kalman_actualizado ? "true" : "false",
+        kalman_state.phi,
+        kalman_state.f,
+        kalman_state.p00,
+        kalman_state.p01,
+        kalman_state.p10,
+        kalman_state.p11,
+        kalman_state.y0,
+        kalman_state.y1,
+        kalman_state.k00,
+        kalman_state.k01,
+        kalman_state.k10,
+        kalman_state.k11
     );
 
     sendJson(json);
@@ -500,4 +549,4 @@ void loop() {
     ticks_raw_prev = ticks_raw;
     seq_prev = seq;
     pps_time_us_prev = pps_time_us;
-}
+}   
