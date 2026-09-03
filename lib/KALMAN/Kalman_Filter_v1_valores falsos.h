@@ -88,7 +88,7 @@ struct Kalman_Config {
             H = [0 1]
             R = r_f
     */
-    double r_f = 0.1;
+    double r_f = 0.25;
 
     /*
         P inicial:
