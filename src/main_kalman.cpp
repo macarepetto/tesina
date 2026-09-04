@@ -15,6 +15,7 @@
 #define PCNT_HIGH_LIMIT 30000
 #define PCNT_LOW_LIMIT -30000
 #define PPS_TIME_TOLERANCE_US 200000UL
+static constexpr int64_t MAX_DIFF_TICKS = 10;
 
 // ==================== AGING DS3231 ====================
 // Cambiar solamente esta línea para cada ensayo.
@@ -435,6 +436,7 @@ void loop() {
 
     uint32_t ticks = 0;
     int64_t diff = 0;
+    bool diff_outlier = false;
 
     if (interval_valid) {
         ticks = ticks_window / seq_delta;
@@ -443,11 +445,17 @@ void loop() {
             (int64_t)32768 * (int64_t)seq_delta;
 
         // Convención del apunte:
-        //     phi = T_RTC - T_GPS
-        //     f   = t_RTC - t_GPS
+        // diff = t_RTC - t_GPS
         diff = (int64_t)ticks_window - expected_ticks;
-        offset_ticks += diff;
-    }
+
+        diff_outlier =
+            (diff > MAX_DIFF_TICKS) ||
+            (diff < -MAX_DIFF_TICKS);
+
+        if (!diff_outlier) {
+            offset_ticks += diff;
+        }
+}
 
     bool kalman_actualizado = false;
     Kalman_State kalman_state;
@@ -470,6 +478,9 @@ void loop() {
         kalman.updatePhiAndF(z_phi, z_f);
         kalman_state = kalman.getState();
         kalman_actualizado = true;
+    } else {
+        kalman_state = kalman.getState();
+        kalman_actualizado = false;
     }
 
     const uint32_t elapsed_seconds_rounded =
@@ -498,6 +509,7 @@ void loop() {
         "\"seq_delta\":%lu,"
         "\"elapsed_us\":%lu,"
         "\"interval_valid\":%s,"
+        "\"diff_outlier\":%s,"
         "\"missed_pps\":%lu,"
         "\"diff\":%lld,"
         "\"offset_ticks\":%lld,"
@@ -526,6 +538,7 @@ void loop() {
         (unsigned long)seq_delta,
         (unsigned long)elapsed_us,
         interval_valid ? "true" : "false",
+        diff_outlier ? "true" : "false",
         (unsigned long)missed_pps,
         (long long)diff,
         (long long)offset_ticks,
