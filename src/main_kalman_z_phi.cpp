@@ -18,13 +18,6 @@
 static constexpr int64_t MAX_DIFF_TICKS = 10;
 static constexpr double TICK_US = 1000000.0 / 32768.0;
 
-// ==================== HOLDOVER ====================
-// Si pasan más de 1,5 s sin PPS, se considera pérdida de referencia.
-static constexpr uint32_t HOLDOVER_TIMEOUT_MS = 1500;
-
-// En holdover se hace una predicción por segundo.
-static constexpr uint32_t HOLDOVER_STEP_MS = 1000;
-
 // ==================== AGING DS3231 ====================
 // Cambiar solamente esta línea para cada ensayo.
 static constexpr int8_t AGING_VALUE = -13;
@@ -354,17 +347,6 @@ void setup() {
 void loop() {
     maintainServerConnection();
 
-    static bool hay_anterior = false;
-    static uint32_t ticks_raw_prev = 0;
-    static uint32_t seq_prev = 0;
-    static uint32_t pps_time_us_prev = 0;
-    static int64_t offset_ticks = 0;
-
-    static uint32_t last_pps_seen_ms = 0;
-    static uint32_t last_holdover_predict_ms = 0;
-    static uint32_t holdover_steps = 0;
-    static bool en_holdover = false;
-
     uint32_t ticks_raw = 0;
     uint32_t seq = 0;
     uint32_t pending = 0;
@@ -387,123 +369,15 @@ void loop() {
 
     portEXIT_CRITICAL(&pcnt_mux);
 
-    // ============================================================
-    // CASO 1: NO LLEGÓ PPS NUEVO
-    // ============================================================
     if (!hay_muestra) {
-        if (!hay_anterior) {
-            return;
-        }
-
-        const uint32_t now_ms = millis();
-        const uint32_t ms_since_last_pps = now_ms - last_pps_seen_ms;
-
-        const bool pps_perdido =
-            ms_since_last_pps > HOLDOVER_TIMEOUT_MS;
-
-        const bool corresponde_predecir =
-            now_ms - last_holdover_predict_ms >= HOLDOVER_STEP_MS;
-
-        if (pps_perdido && corresponde_predecir) {
-            en_holdover = true;
-            holdover_steps++;
-
-            // En holdover NO hay medición nueva.
-            // Solo se aplica la etapa de predicción:
-            //
-            //     phi(k+1) = phi(k) + f(k)
-            //     f(k+1)   = f(k)
-            kalman.predict();
-
-            Kalman_State kalman_state = kalman.getState();
-
-            const double offset_us =
-                (double)offset_ticks * TICK_US;
-
-            const double kalman_phi_us =
-                kalman_state.phi * TICK_US;
-
-            char json[1400];
-
-            snprintf(
-                json,
-                sizeof(json),
-                "{\"id\":\"%s\","
-                "\"aging\":%d,"
-                "\"ms\":%lu,"
-                "\"modo\":\"HOLDOVER\","
-                "\"first\":false,"
-                "\"pps_seq\":%lu,"
-                "\"pps_pending\":0,"
-                "\"pps_period_us\":0,"
-                "\"ms_since_last_pps\":%lu,"
-                "\"holdover_steps\":%lu,"
-                "\"offset_medido_disponible\":false,"
-                "\"kalman_prediccion\":true,"
-                "\"kalman_actualizado\":false,"
-                "\"ticks\":null,"
-                "\"ticks_window\":null,"
-                "\"ticks_raw\":null,"
-                "\"seq_delta\":0,"
-                "\"elapsed_us\":null,"
-                "\"interval_valid\":false,"
-                "\"diff_outlier\":false,"
-                "\"missed_pps\":0,"
-                "\"diff\":null,"
-                "\"offset_ticks\":%lld,"
-                "\"offset_us\":%.3f,"
-                "\"kalman_medicion\":\"none\","
-                "\"kalman_z_phi\":null,"
-                "\"kalman_phi\":%.6f,"
-                "\"kalman_phi_us\":%.3f,"
-                "\"kalman_f\":%.6f,"
-                "\"kalman_p00\":%.6f,"
-                "\"kalman_p01\":%.6f,"
-                "\"kalman_p10\":%.6f,"
-                "\"kalman_p11\":%.6f,"
-                "\"kalman_y_phi\":%.6f,"
-                "\"kalman_k_phi\":%.6f,"
-                "\"kalman_k_f\":%.6f,"
-                "\"residual_us\":null}",
-                DEVICE_ID,
-                (int)aging_aplicado,
-                (unsigned long)now_ms,
-                (unsigned long)seq_prev,
-                (unsigned long)ms_since_last_pps,
-                (unsigned long)holdover_steps,
-                (long long)offset_ticks,
-                offset_us,
-                kalman_state.phi,
-                kalman_phi_us,
-                kalman_state.f,
-                kalman_state.p00,
-                kalman_state.p01,
-                kalman_state.p10,
-                kalman_state.p11,
-                kalman_state.y0,
-                kalman_state.k00,
-                kalman_state.k10
-            );
-
-            sendJson(json);
-
-            last_holdover_predict_ms = now_ms;
-        }
-
         return;
     }
 
-    // ============================================================
-    // CASO 2: LLEGÓ PPS NUEVO
-    // ============================================================
-
-    const uint32_t now_ms = millis();
-
-    const bool venia_de_holdover = en_holdover;
-    const uint32_t holdover_steps_previos = holdover_steps;
-
-    last_pps_seen_ms = now_ms;
-    last_holdover_predict_ms = now_ms;
+    static bool hay_anterior = false;
+    static uint32_t ticks_raw_prev = 0;
+    static uint32_t seq_prev = 0;
+    static uint32_t pps_time_us_prev = 0;
+    static int64_t offset_ticks = 0;
 
     if (!hay_anterior) {
         ticks_raw_prev = ticks_raw;
@@ -511,10 +385,7 @@ void loop() {
         pps_time_us_prev = pps_time_us;
         hay_anterior = true;
 
-        last_pps_seen_ms = now_ms;
-        last_holdover_predict_ms = now_ms;
-
-        char json[700];
+        char json[520];
 
         snprintf(
             json,
@@ -527,9 +398,6 @@ void loop() {
             "\"pps_period_us\":%lu,"
             "\"modo\":\"PPS_INICIAL\","
             "\"first\":true,"
-            "\"offset_medido_disponible\":false,"
-            "\"kalman_prediccion\":false,"
-            "\"kalman_actualizado\":false,"
             "\"ticks\":0,"
             "\"ticks_window\":0,"
             "\"ticks_raw\":%lu,"
@@ -542,10 +410,10 @@ void loop() {
             "\"offset_ticks\":0,"
             "\"offset_us\":0.000,"
             "\"kalman_phi_us\":0.000,"
-            "\"residual_us\":null}",
+            "\"residual_us\":0.000}",
             DEVICE_ID,
             (int)aging_aplicado,
-            (unsigned long)now_ms,
+            (unsigned long)millis(),
             (unsigned long)seq,
             (unsigned long)pending,
             (unsigned long)pps_period_us,
@@ -576,22 +444,14 @@ void loop() {
     int64_t diff = 0;
     bool diff_outlier = false;
 
-    /*
-        Si veníamos de holdover, esta primera muestra se usa
-        solamente para reenganchar la referencia.
-
-        No se usa para actualizar offset ni Kalman, porque el intervalo
-        entre el último PPS antes de la pérdida y este nuevo PPS no
-        representa una ventana normal de 1 segundo.
-    */
-    if (interval_valid && !venia_de_holdover) {
+    if (interval_valid) {
         ticks = ticks_window / seq_delta;
 
         const int64_t expected_ticks =
             (int64_t)32768 * (int64_t)seq_delta;
 
-        // Convención:
-        // diff = ticks_RTC - ticks_esperados_GNSS
+        // Convención del apunte:
+        // diff = t_RTC - t_GPS
         diff = (int64_t)ticks_window - expected_ticks;
 
         diff_outlier =
@@ -601,32 +461,32 @@ void loop() {
         if (!diff_outlier) {
             offset_ticks += diff;
         }
-    }
+}
 
     bool kalman_actualizado = false;
-    bool kalman_prediccion = false;
     Kalman_State kalman_state;
 
-    if (
-        interval_valid &&
-        seq_delta == 1 &&
-        !diff_outlier &&
-        !venia_de_holdover
-    ) {
-        // Etapa de predicción
+    if (interval_valid && seq_delta == 1 && !diff_outlier) {
+        // Modelo del apunte, un paso por cada PPS:
+        //     x_pred = F x
+        //     P_pred = F P F^T + Q
         kalman.predict();
-        kalman_prediccion = true;
 
-        // Etapa de actualización con medición escalar:
-        // z = phi
-        kalman.updatePhi((double)offset_ticks);
+        // Medición escalar del apunte:
+        //     z = phi
+        //     H = [1 0]
+        //     R = r_phi
+        //
+        // En el prototipo:
+        //     z_phi = offset_ticks
+        const double z_phi = (double)offset_ticks;
 
+        kalman.updatePhi(z_phi);
         kalman_state = kalman.getState();
         kalman_actualizado = true;
     } else {
         kalman_state = kalman.getState();
         kalman_actualizado = false;
-        kalman_prediccion = false;
     }
 
     const uint32_t elapsed_seconds_rounded =
@@ -637,11 +497,6 @@ void loop() {
             ? elapsed_seconds_rounded - seq_delta
             : 0;
 
-    const bool offset_medido_disponible =
-        interval_valid &&
-        !diff_outlier &&
-        !venia_de_holdover;
-
     const double offset_us =
         (double)offset_ticks * TICK_US;
 
@@ -651,32 +506,12 @@ void loop() {
     const double residual_us =
         offset_us - kalman_phi_us;
 
-    char residual_json[40];
+    const char* modo =
+        (interval_valid && seq_delta == 1 && !diff_outlier)
+            ? "PPS_KALMAN_Z_PHI"
+            : "PPS_SIN_UPDATE_KALMAN";
 
-    if (offset_medido_disponible) {
-        snprintf(
-            residual_json,
-            sizeof(residual_json),
-            "%.3f",
-            residual_us
-        );
-    } else {
-        snprintf(
-            residual_json,
-            sizeof(residual_json),
-            "null"
-        );
-    }
-
-    const char* modo = "PPS_SIN_UPDATE_KALMAN";
-
-    if (venia_de_holdover) {
-        modo = "PPS_REENGANCHE";
-    } else if (kalman_actualizado) {
-        modo = "PPS_KALMAN_Z_PHI";
-    }
-
-    char json[1600];
+    char json[1200];
 
     snprintf(
         json,
@@ -689,10 +524,6 @@ void loop() {
         "\"pps_period_us\":%lu,"
         "\"modo\":\"%s\","
         "\"first\":false,"
-        "\"ms_since_last_pps\":0,"
-        "\"holdover_steps\":%lu,"
-        "\"offset_medido_disponible\":%s,"
-        "\"kalman_prediccion\":%s,"
         "\"ticks\":%lu,"
         "\"ticks_window\":%lu,"
         "\"ticks_raw\":%lu,"
@@ -717,17 +548,14 @@ void loop() {
         "\"kalman_y_phi\":%.6f,"
         "\"kalman_k_phi\":%.6f,"
         "\"kalman_k_f\":%.6f,"
-        "\"residual_us\":%s}",
+        "\"residual_us\":%.3f}",
         DEVICE_ID,
         (int)aging_aplicado,
-        (unsigned long)now_ms,
+        (unsigned long)millis(),
         (unsigned long)seq,
         (unsigned long)pending,
         (unsigned long)pps_period_us,
         modo,
-        (unsigned long)(venia_de_holdover ? holdover_steps_previos : 0),
-        offset_medido_disponible ? "true" : "false",
-        kalman_prediccion ? "true" : "false",
         (unsigned long)ticks,
         (unsigned long)ticks_window,
         (unsigned long)ticks_raw,
@@ -751,7 +579,7 @@ void loop() {
         kalman_state.y0,
         kalman_state.k00,
         kalman_state.k10,
-        residual_json
+        residual_us
     );
 
     sendJson(json);
@@ -759,9 +587,4 @@ void loop() {
     ticks_raw_prev = ticks_raw;
     seq_prev = seq;
     pps_time_us_prev = pps_time_us;
-
-    if (venia_de_holdover) {
-        en_holdover = false;
-        holdover_steps = 0;
-    }
-}
+}   
