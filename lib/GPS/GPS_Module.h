@@ -14,7 +14,14 @@ class GPS_Module {
 public:
     GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud = 9600);
 
+    // Sólo inicia UART/NMEA. Usar este método cuando el PPS lo maneja otra parte
+    // del sistema, por ejemplo el main junto con PCNT.
+    void beginNmeaOnly();
+
+    // Inicia UART/NMEA y además engancha la ISR PPS interna del módulo GPS.
+    // No usar si el PPS ya se usa en otra ISR del sistema.
     void begin();
+
     void update();
 
     // RMC válida
@@ -23,8 +30,8 @@ public:
     bool hasLastValidRmc() const;
     unsigned long getLastValidRmcAgeMs() const;
 
-    // GNSS “alineado al PPS” (estable, NO depende del WiFi)
-    // Devuelve la hora local (UTC-3) estimada para el "segundo PPS" actual
+    // GNSS “alineado al PPS” usando el contador PPS interno de este módulo.
+    // Sólo tiene sentido si se llamó begin(), no beginNmeaOnly().
     bool getGpsLocalAtPps(DateTime& outLocal) const;
 
     // Contadores NMEA
@@ -43,11 +50,11 @@ public:
     float getGsaHdop() const;
     float getGsaVdop() const;
 
-    // PPS “limpio”
-    unsigned long getPpsPulseCount() const; // pulsos PPS aceptados como PPS real
-    unsigned long getPpsPeriodUs() const;   // último período aceptado (us)
-    bool hasSeenPps() const;                // vio PPS aceptado alguna vez
-    unsigned long getLastPpsUs() const;     // micros() del último PPS aceptado
+    // PPS interno del GPS_Module
+    unsigned long getPpsPulseCount() const;
+    unsigned long getPpsPeriodUs() const;
+    bool hasSeenPps() const;
+    unsigned long getLastPpsUs() const;
 
 private:
     HardwareSerial& _serial;
@@ -75,7 +82,7 @@ private:
     bool _haveLastValidRmc = false;
     unsigned long _lastValidRmcMs = 0;
 
-    // Base estable GNSS@PPS (se actualiza al recibir RMC válida)
+    // Base estable GNSS@PPS (sólo para PPS interno del GPS_Module)
     DateTime _lastRmcLocal = DateTime(2000,1,1,0,0,0);
     bool _haveLastRmcLocal = false;
     unsigned long _ppsCountAtLastRmc = 0;
@@ -87,7 +94,7 @@ private:
     unsigned long _cntGSA   = 0;
     unsigned long _cntOTROS = 0;
 
-    // PPS (static para ISR)
+    // PPS interno (static para ISR)
     static volatile unsigned long _ppsPulses;
     static volatile unsigned long _ppsLastUs;
     static volatile unsigned long _ppsPeriodUs;

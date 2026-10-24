@@ -10,8 +10,12 @@ volatile unsigned long GPS_Module::_ppsLastUsValid = 0;
 GPS_Module::GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud)
     : _serial(serial), _rxPin(rxPin), _txPin(txPin), _ppsPin(ppsPin), _baud(baud) {}
 
-void GPS_Module::begin() {
+void GPS_Module::beginNmeaOnly() {
     _serial.begin(_baud, SERIAL_8N1, _rxPin, _txPin);
+}
+
+void GPS_Module::begin() {
+    beginNmeaOnly();
 
     // Si estás usando GPIO27/32 para poder pullup interno, esto está perfecto.
     // OJO: PPS normalmente es push-pull, el pullup interno no molesta.

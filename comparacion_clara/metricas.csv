@@ -1,0 +1,8 @@
+config,q_phi,q_f,R_phi,MAE_pred_5min_us,n_5min,MAE_pred_10min_us,n_10min
+Original,0.0001,1e-07,1,16.4185,95,30.013,94
+Candidata,1e-06,1e-10,1,10.3594,95,15.0192,94
+Candidata_R4,1e-06,1e-10,4,10.5622,95,15.0223,94
+Candidata_Qphi_mas_alto,1e-05,1e-10,1,10.0722,95,14.8228,94
+Candidata_Qphi_intermedio,3e-06,1e-10,1,10.2861,95,14.9597,94
+Candidata_Qf_mas_lento,1e-06,3e-11,1,10.511,95,15.0175,94
+Candidata_Qf_mas_rapido,1e-06,3e-10,1,10.1981,95,15.7979,94

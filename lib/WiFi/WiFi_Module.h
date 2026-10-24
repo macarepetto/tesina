@@ -18,7 +18,8 @@ public:
     bool isWifiConnected() const;
     bool isServerConnected();
 
-    void sendLine(const String& line);
+    //void sendLine(const String& line);
+    void sendLine(const char* line);
 
 private:
     const char* _ssid;

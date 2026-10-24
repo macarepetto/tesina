@@ -69,8 +69,8 @@ struct Kalman_Config {
 
         Representan el ruido del modelo.
     */
-    double q_phi = 0.0001;
-    double q_f   = 0.0000001;
+    double q_phi = 0.000001;
+    double q_f   = 0.0000000001;
 
     /*
         R para el caso en que se mide phi:

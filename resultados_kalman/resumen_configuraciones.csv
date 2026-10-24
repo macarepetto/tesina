@@ -1,0 +1,8 @@
+config,q_phi,q_f,R_phi,MAE_pred_5min_us,n_5min,MAE_pred_10min_us,n_10min
+Original_log,0.0001,1e-07,1.0,16.419,95,30.013,94
+Candidata,1e-06,1e-10,1.0,10.359,95,15.019,94
+Candidata_R4,1e-06,1e-10,4.0,10.562,95,15.022,94
+Candidata_R9,1e-06,1e-10,9.0,10.774,95,15.059,94
+Intermedia,1e-05,1e-09,1.0,10.528,95,17.413,94
+Intermedia_R4,1e-05,1e-09,4.0,10.098,95,15.476,94
+Original_R4,0.0001,1e-07,4.0,13.822,95,25.079,94

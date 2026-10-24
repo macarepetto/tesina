@@ -100,7 +100,7 @@ void WiFi_Module::connectServer() {
     Serial.println(ok ? "[WiFi] TCP conectado!" : "[WiFi] TCP NO conecta");
 }
 
-void WiFi_Module::sendLine(const String& line) {
+void WiFi_Module::sendLine(const char* line) {
     if (!isWifiConnected()) return;
     if (!isServerConnected()) return;
 
