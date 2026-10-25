@@ -7,10 +7,10 @@
 class WiFi_Module {
 public:
     WiFi_Module(const char* ssid,
-                         const char* password,
-                         const char* serverIp,
-                         uint16_t serverPort,
-                         const char* deviceId);
+                const char* password,
+                const char* serverIp,
+                uint16_t serverPort,
+                const char* deviceId);
 
     void begin();
     void update();
@@ -18,8 +18,9 @@ public:
     bool isWifiConnected() const;
     bool isServerConnected();
 
-    //void sendLine(const String& line);
-    void sendLine(const char* line);
+    // True: el cliente TCP local aceptó la línea completa con CRLF.
+    // NO confirma que el servidor la haya recibido o persistido.
+    bool sendLine(const char* line);
 
 private:
     const char* _ssid;

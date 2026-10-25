@@ -1,3 +1,4 @@
+#include <string.h>
 #include "WiFi_Module.h"
 
 WiFi_Module::WiFi_Module(const char* ssid,
@@ -100,9 +101,13 @@ void WiFi_Module::connectServer() {
     Serial.println(ok ? "[WiFi] TCP conectado!" : "[WiFi] TCP NO conecta");
 }
 
-void WiFi_Module::sendLine(const char* line) {
-    if (!isWifiConnected()) return;
-    if (!isServerConnected()) return;
+bool WiFi_Module::sendLine(const char* line) {
+    if (line == nullptr || !isWifiConnected() || !isServerConnected()) {
+        return false;
+    }
 
-    _client.println(line);
+    // println agrega CRLF. El retorno cuenta los bytes entregados al cliente TCP.
+    // No equivale a una confirmación de recepción por parte del servidor.
+    const size_t expected = strlen(line) + 2;
+    return _client.println(line) == expected;
 }

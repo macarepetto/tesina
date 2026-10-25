@@ -4,6 +4,7 @@
 #include "GPS_Module.h"
 #include "RTC_Module.h"
 #include "WiFi_Module.h"
+#include "Telemetry_Queue_Module.h"
 #include "Json_Log_Builder.h"
 
 // ==================== PINES ====================
@@ -71,19 +72,113 @@ volatile uint32_t pps_period_us_isr = 0;
 int8_t aging_aplicado = 0;
 
 // ==================== FECHA/HORA GNSS + RTC ====================
-void sendJson(const char* json);
 
 // Para el log: consideramos GNSS válido sólo si la última RMC válida es reciente.
 static constexpr uint32_t GNSS_VALID_LOG_MAX_AGE_MS = 3000;
 
 // Ejecutar tareas secundarias con un ritmo acotado.
-// La medición PPS/PCNT se procesa primero; GNSS/WiFi quedan como tareas de fondo.
+// La medición PPS/PCNT se procesa primero; GNSS queda en background.
+// La comunicación WiFi se procesa en CORE 0 con Telemetry_Queue_Module.
 static constexpr uint32_t BACKGROUND_TASKS_PERIOD_MS = 20;
 
-// Flags para diagnóstico. Si vuelven a aparecer pps_pending altos,
-// probar primero desactivar Serial, después WiFi, para identificar el cuello.
-static constexpr bool LOG_JSON_SERIAL = true;
-static constexpr bool LOG_JSON_WIFI = true;
+// Cola + tarea de salida WiFi (CORE 0). El loop sólo encola cada JSON.
+Telemetry_Queue_Module telemetryQueue(wifiModule);
+
+// ==================== TRES RELOJES RELATIVOS ====================
+// Este comparador NO altera la hora interna del DS3231 ni el filtro.
+// En el primer PPS con RMC reciente fijamos una época candidata común.
+// GNSS: un segundo entero por PPS. RTC: tiempo transcurrido según 32 kHz.
+// Kalman: tiempo RTC menos la deriva relativa estimada (phi - phi_inicio).
+// La asociación entre la época RMC y el pulso físico AÚN NO ESTÁ VALIDADA.
+struct TresRelojesBase {
+    bool disponible = false;
+    uint32_t seq_inicio = 0;
+    uint32_t ticks_inicio = 0;
+    uint32_t epoch_local_inicio = 0;
+    double phi_inicio = 0.0;
+};
+static TresRelojesBase tresRelojesBase;
+
+static int64_t redondearMicrosegundos(double value) {
+    return (int64_t)(value >= 0.0 ? value + 0.5 : value - 0.5);
+}
+
+static void formatoHoraLocalUs(int64_t timestamp_us, char* out, size_t len) {
+    const uint32_t epoch_s = (uint32_t)(timestamp_us / 1000000LL);
+    const unsigned long fraccion_us =
+        (unsigned long)(timestamp_us % 1000000LL);
+    const DateTime dt(epoch_s);
+    snprintf(out, len, "%04u-%02u-%02uT%02u:%02u:%02u.%06lu",
+        (unsigned)dt.year(), (unsigned)dt.month(), (unsigned)dt.day(),
+        (unsigned)dt.hour(), (unsigned)dt.minute(), (unsigned)dt.second(),
+        fraccion_us);
+}
+
+static void anexarTresRelojes(
+    char* out, size_t len, bool pps_apto,
+    uint32_t seq, uint32_t ticks_raw,
+    const Kalman_State* kalman_state,
+    bool rmc_reciente, const DateTime& gnss_local)
+{
+    if (len == 0) return;
+    const size_t used = strlen(out);
+    if (used >= len) return;
+
+    // La época solo se establece en un PPS sin backlog y con Kalman actualizado.
+    // El dato RMC sirve para etiquetar las tres series; no valida fase absoluta.
+    if (!tresRelojesBase.disponible && pps_apto &&
+        kalman_state != nullptr && rmc_reciente) {
+        tresRelojesBase.disponible = true;
+        tresRelojesBase.seq_inicio = seq;
+        tresRelojesBase.ticks_inicio = ticks_raw;
+        tresRelojesBase.epoch_local_inicio = gnss_local.unixtime();
+        tresRelojesBase.phi_inicio = kalman_state->phi;
+    }
+
+    const bool utilizable = tresRelojesBase.disponible && pps_apto &&
+        kalman_state != nullptr && rmc_reciente &&
+        seq >= tresRelojesBase.seq_inicio &&
+        (seq - tresRelojesBase.seq_inicio) < 64800UL;
+
+    if (!utilizable) {
+        snprintf(out + used, len - used,
+            ",\"reloj_gnss_pps\":null,"
+            "\"reloj_rtc_32k\":null,"
+            "\"reloj_kalman\":null,"
+            "\"desfase_rtc_us\":null,"
+            "\"desfase_kalman_us\":null,"
+            "\"relojes_estado\":\"SIN_MUESTRA_COMPARABLE\"");
+        return;
+    }
+
+    const uint32_t segundos = seq - tresRelojesBase.seq_inicio;
+    const uint32_t ticks_32k = ticks_raw - tresRelojesBase.ticks_inicio;
+    const double transcurrido_rtc_us = (double)ticks_32k * TICK_US;
+    const double transcurrido_gnss_us = (double)segundos * 1000000.0;
+    // Desfase respecto del PPS inicial, no fase absoluta del calendario RTC.
+    const double desfase_rtc_us = transcurrido_rtc_us - transcurrido_gnss_us;
+    const double desfase_kalman_us = desfase_rtc_us -
+        (kalman_state->phi - tresRelojesBase.phi_inicio) * TICK_US;
+
+    const int64_t referencia_us =
+        ((int64_t)tresRelojesBase.epoch_local_inicio + segundos) * 1000000LL;
+    char hora_gnss[40], hora_rtc[40], hora_kalman[40];
+    formatoHoraLocalUs(referencia_us, hora_gnss, sizeof(hora_gnss));
+    formatoHoraLocalUs(referencia_us + redondearMicrosegundos(desfase_rtc_us),
+                       hora_rtc, sizeof(hora_rtc));
+    formatoHoraLocalUs(referencia_us + redondearMicrosegundos(desfase_kalman_us),
+                       hora_kalman, sizeof(hora_kalman));
+
+    snprintf(out + used, len - used,
+        ",\"reloj_gnss_pps\":\"%s\","
+        "\"reloj_rtc_32k\":\"%s\","
+        "\"reloj_kalman\":\"%s\","
+        "\"desfase_rtc_us\":%.3f,"
+        "\"desfase_kalman_us\":%.3f,"
+        "\"relojes_estado\":\"RELATIVO_EPOCA_RMC_NO_VALIDADA\"",
+        hora_gnss, hora_rtc, hora_kalman,
+        desfase_rtc_us, desfase_kalman_us);
+}
 
 // El RTC se sincroniza una sola vez: con la primera RMC válida recibida.
 static bool rtc_sincronizado = false;
@@ -114,7 +209,11 @@ void sincronizarRtcConPrimerGnssValido() {
     }
 }
 
-void buildRtcGnssJsonFields(char* out, size_t len) {
+void buildRtcGnssJsonFields(char* out, size_t len,
+                            bool pps_apto = false,
+                            uint32_t seq = 0,
+                            uint32_t ticks_raw = 0,
+                            const Kalman_State* kalman_state = nullptr) {
     char rtc_json[40];
     char gnss_json[40];
 
@@ -148,6 +247,10 @@ void buildRtcGnssJsonFields(char* out, size_t len) {
         rtc_json,
         gnss_json
     );
+
+    // La comprobación de RMC se hace sin nuevas operaciones UART ni I2C.
+    anexarTresRelojes(out, len, pps_apto, seq, ticks_raw, kalman_state,
+        gnss_ok && gps.hasValidRmcRecent(1500), gnss_local);
 }
 
 
@@ -163,7 +266,6 @@ void runBackgroundTasks() {
 
     gps.update();
     sincronizarRtcConPrimerGnssValido();
-    wifiModule.update();
 }
 
 // ==================== INTERRUPCIONES ====================
@@ -241,16 +343,6 @@ void setupPCNT() {
     pcnt_counter_resume(PCNT_UNIT_USED);
 }
 
-void sendJson(const char* json) {
-    if (LOG_JSON_SERIAL) {
-        Serial.println(json);
-    }
-
-    if (LOG_JSON_WIFI) {
-        wifiModule.sendLine(json);
-    }
-}
-
 void setup() {
     Serial.begin(115200);
     delay(300);
@@ -294,14 +386,19 @@ void setup() {
     setupPCNT();
     pinMode(PIN_PPS_GPS, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_PPS_GPS), onPPS, RISING);
-    wifiModule.begin();
-    Serial.println("PCNT iniciado. Esperando PPS...");
+    if (!telemetryQueue.begin()) {
+        Serial.println("ERROR: no se pudo crear la cola/tarea de telemetria");
+        while (true) {
+            delay(1000);
+        }
+    }
+    Serial.println("PCNT iniciado. Telemetria en CORE 0. Esperando PPS...");
 }
 
 // ==================== MEDICIÓN ====================
 
 void loop() {
-    // Primero se atiende PPS/PCNT. Las tareas GNSS/WiFi quedan para cuando no hay muestra pendiente.
+    // Primero se atiende PPS/PCNT. GNSS queda en background; los JSON van por WiFi en CORE 0.
     static bool hay_anterior = false;
     static uint32_t ticks_raw_prev = 0;
     static uint32_t seq_prev = 0;
@@ -353,7 +450,7 @@ void loop() {
             //     f(k+1)   = f(k)
             kalman.predict();
             Kalman_State kalman_state = kalman.getState();
-            char rtc_gnss_fields[180];
+            char rtc_gnss_fields[480];
             buildRtcGnssJsonFields(rtc_gnss_fields, sizeof(rtc_gnss_fields));
 
             char json[1800];
@@ -371,7 +468,7 @@ void loop() {
                 kalman_state,
                 rtc_gnss_fields
             );
-            sendJson(json);
+            telemetryQueue.enqueue(json);
             last_holdover_predict_ms = now_ms;
         }
         return;
@@ -391,7 +488,7 @@ void loop() {
         hay_anterior = true;
         last_pps_seen_ms = now_ms;
         last_holdover_predict_ms = now_ms;
-        char rtc_gnss_fields[180];
+        char rtc_gnss_fields[480];
         buildRtcGnssJsonFields(rtc_gnss_fields, sizeof(rtc_gnss_fields));
 
         char json[1800];
@@ -407,7 +504,7 @@ void loop() {
             ticks_raw,
             rtc_gnss_fields
         );
-        sendJson(json);
+        telemetryQueue.enqueue(json);
         return;
     }
     const uint32_t ticks_window = ticks_raw - ticks_raw_prev;
@@ -484,8 +581,12 @@ void loop() {
     } else if (kalman_actualizado) {
         modo = "PPS_KALMAN_Z_PHI";
     }
-    char rtc_gnss_fields[180];
-    buildRtcGnssJsonFields(rtc_gnss_fields, sizeof(rtc_gnss_fields));
+    char rtc_gnss_fields[480];
+    const bool pps_apto_para_relojes =
+        pending == 1 && seq_delta == 1 && kalman_actualizado && !venia_de_holdover;
+    buildRtcGnssJsonFields(rtc_gnss_fields, sizeof(rtc_gnss_fields),
+                           pps_apto_para_relojes, seq, ticks_raw,
+                           &kalman_state);
 
     char json[1800];
     buildPpsLogJson(
@@ -516,7 +617,7 @@ void loop() {
         kalman_state,
         rtc_gnss_fields
     );
-    sendJson(json);
+    telemetryQueue.enqueue(json);
     ticks_raw_prev = ticks_raw;
     seq_prev = seq;
     pps_time_us_prev = pps_time_us;
