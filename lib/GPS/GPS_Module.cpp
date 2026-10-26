@@ -25,8 +25,12 @@ void GPS_Module::begin() {
 
 void GPS_Module::update() {
     while (_serial.available()) {
-        char c = (char)_serial.read();
+        const uint8_t byte = (uint8_t)_serial.read();
         _lastByteMs = millis();
+        // Una sentencia NMEA sigue procesandose igual. Solo se apartan del
+        // parser ASCII los bytes que forman una trama binaria UBX.
+        if (consumirByteUbx(byte)) continue;
+        char c = (char)byte;
 
         if (c == '$') {
             closeSentenceIfNeeded();
@@ -53,6 +57,111 @@ void GPS_Module::update() {
     // timeout de sentencia incompleta
     if (_inSentence && (millis() - _lastByteMs) > 200) {
         closeSentenceIfNeeded();
+    }
+}
+
+
+// UBX-NAV-TIMEUTC Poll: B5 62 / clase 01 / id 21 / longitud 0000 / CK 22 67.
+// Consultamos cada 2s para NO modificar las salidas permanentes del NEO-6.
+void GPS_Module::consultarUbxUtcSiCorresponde() {
+    const uint32_t ahora = millis();
+    if ((uint32_t)(ahora - _ubxLastPollMs) < 2000UL) return;
+    _ubxLastPollMs = ahora;
+    static const uint8_t poll[8] = {0xB5, 0x62, 0x01, 0x21,
+                                    0x00, 0x00, 0x22, 0x67};
+    if (_serial.write(poll, sizeof(poll)) == sizeof(poll)) {
+        ++_ubxUtc.consultas;
+    }
+}
+
+UbxUtcDiagnostics GPS_Module::getUbxUtcDiagnostics() const {
+    return _ubxUtc;
+}
+
+void GPS_Module::incluirEnChecksumUbx(uint8_t b) {
+    _ubxCkA = (uint8_t)(_ubxCkA + b);
+    _ubxCkB = (uint8_t)(_ubxCkB + _ubxCkA);
+}
+
+static uint32_t ubxU4(const uint8_t* b) {
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+void GPS_Module::interpretarUbxTimeUtc() {
+    if (_ubxClass != 0x01 || _ubxId != 0x21 || _ubxLength != 20) return;
+    ++_ubxUtc.respuestas;
+    _ubxUtc.recibido = true;
+    _ubxUtc.recibido_ms = millis();
+    _ubxUtc.iTOW_ms = ubxU4(&_ubxPayload[0]);
+    _ubxUtc.tAcc_ns = ubxU4(&_ubxPayload[4]);
+    _ubxUtc.nano_ns = (int32_t)ubxU4(&_ubxPayload[8]);
+    _ubxUtc.year = (uint16_t)(_ubxPayload[12] | (_ubxPayload[13] << 8));
+    _ubxUtc.month = _ubxPayload[14];
+    _ubxUtc.day = _ubxPayload[15];
+    _ubxUtc.hour = _ubxPayload[16];
+    _ubxUtc.minute = _ubxPayload[17];
+    _ubxUtc.second = _ubxPayload[18];
+    _ubxUtc.flags = _ubxPayload[19];
+    _ubxUtc.fecha_razonable =
+        _ubxUtc.year >= 2020 && _ubxUtc.year <= 2099 &&
+        _ubxUtc.month >= 1 && _ubxUtc.month <= 12 &&
+        _ubxUtc.day >= 1 && _ubxUtc.day <= 31 &&
+        _ubxUtc.hour <= 23 && _ubxUtc.minute <= 59 &&
+        _ubxUtc.second <= 59;
+}
+
+// Retorna true cuando consumio el byte como parte de UBX.
+// Permite intercalar sin mezclar UBX y NMEA en la misma UART.
+bool GPS_Module::consumirByteUbx(uint8_t b) {
+    switch (_ubxState) {
+    case 0:
+        if (b == 0xB5) { _ubxState = 1; return true; }
+        return false;
+    case 1:
+        if (b == 0x62) {
+            _ubxState = 2; _ubxCkA = 0; _ubxCkB = 0;
+            _ubxLength = 0; _ubxIndex = 0;
+            return true;
+        }
+        _ubxState = (b == 0xB5) ? 1 : 0;
+        return b == 0xB5; // Si no era UBX, el byte vuelve a NMEA.
+    case 2:
+        _ubxClass = b; incluirEnChecksumUbx(b); _ubxState = 3; return true;
+    case 3:
+        _ubxId = b; incluirEnChecksumUbx(b); _ubxState = 4; return true;
+    case 4:
+        _ubxLength = b; incluirEnChecksumUbx(b); _ubxState = 5; return true;
+    case 5:
+        _ubxLength |= ((uint16_t)b << 8); incluirEnChecksumUbx(b);
+        if (_ubxLength > sizeof(_ubxPayload)) {
+            _ubxState = 0; // Descartar mensajes grandes; no los necesitamos.
+        } else {
+            _ubxState = _ubxLength ? 6 : 7;
+        }
+        return true;
+    case 6:
+        _ubxPayload[_ubxIndex++] = b;
+        incluirEnChecksumUbx(b);
+        if (_ubxIndex >= _ubxLength) _ubxState = 7;
+        return true;
+    case 7:
+        if (b == _ubxCkA) _ubxState = 8;
+        else {
+            if (_ubxClass == 0x01 && _ubxId == 0x21)
+                ++_ubxUtc.checksum_fallos;
+            _ubxState = 0;
+        }
+        return true;
+    case 8:
+        if (b == _ubxCkB) interpretarUbxTimeUtc();
+        else if (_ubxClass == 0x01 && _ubxId == 0x21)
+            ++_ubxUtc.checksum_fallos;
+        _ubxState = 0;
+        return true;
+    default:
+        _ubxState = 0;
+        return false;
     }
 }
 
@@ -92,6 +201,27 @@ static int toIntSafe(String x) {
     return x.toInt();
 }
 
+// NMEA-0183: XOR de los caracteres entre '$' y '*'.
+// Se verifica solo RMC para mantener acotado este cambio experimental.
+static int nmeaHex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static bool checksumRmcCorrecto(const String& s) {
+    if (s.length() < 10 || s[0] != '$') return false;
+    const int star = s.indexOf('*');
+    if (star <= 1 || star + 3 != (int)s.length()) return false;
+    const int hi = nmeaHex(s[star + 1]);
+    const int lo = nmeaHex(s[star + 2]);
+    if (hi < 0 || lo < 0) return false;
+    uint8_t xorValue = 0;
+    for (int i = 1; i < star; ++i) xorValue ^= (uint8_t)s[i];
+    return xorValue == (uint8_t)((hi << 4) | lo);
+}
+
 void GPS_Module::processSentence(const String& line) {
     if (line.length() < 6) return;
 
@@ -107,10 +237,41 @@ void GPS_Module::processSentence(const String& line) {
 
     // ---- Parse RMC (Cualquier constelación) ----
     RmcData r;
-    if (type == "RMC" && parseRMC(line, r) && rmcEsRazonable(r)) {
-        _lastValidRmc = r;
-        _haveLastValidRmc = true;
-        _lastValidRmcMs = millis();
+    if (type == "RMC") {
+        if (!checksumRmcCorrecto(line)) {
+            ++_rmcDiag.checksum_fallidos;
+        } else if (!parseRMC(line, r) || !rmcEsRazonable(r)) {
+            ++_rmcDiag.rechazadas;
+        } else {
+            const uint32_t ahoraMs = millis();
+            const DateTime utc(r.year, r.month, r.day, r.hour, r.minute, r.second);
+            if (_haveLastValidRmc) {
+                const DateTime ant(_lastValidRmc.year, _lastValidRmc.month,
+                                   _lastValidRmc.day, _lastValidRmc.hour,
+                                   _lastValidRmc.minute, _lastValidRmc.second);
+                const int32_t delta_s = (int32_t)((int64_t)utc.unixtime() -
+                                                  (int64_t)ant.unixtime());
+                const uint32_t dt_ms = ahoraMs - _lastValidRmcMs;
+                _rmcDiag.intervalo_ms = dt_ms;
+                _rmcDiag.ultimo_delta_s = delta_s;
+                // Comparacion diagnostica. No se asume exactamente 1 Hz en caso
+                // de pausas largas o reacquisicion; tampoco se descarta la RMC.
+                if (dt_ms >= 500UL && dt_ms <= 15000UL) {
+                    const int32_t esperado = (int32_t)((dt_ms + 500UL) / 1000UL);
+                    _rmcDiag.ultimo_error_continuidad_s = delta_s - esperado;
+                    if (_rmcDiag.ultimo_error_continuidad_s != 0) {
+                        ++_rmcDiag.saltos;
+                    }
+                } else {
+                    _rmcDiag.ultimo_error_continuidad_s = 0;
+                }
+            }
+            ++_rmcDiag.validas;
+            ++_rmcDiag.revision;
+            _rmcDiag.procesado_us = micros();
+            _lastValidRmc = r;
+            _haveLastValidRmc = true;
+            _lastValidRmcMs = ahoraMs;
 
         // Base GNSS@PPS: guardo DateTime local y snapshot consistente del contador PPS
         DateTime loc(2000,1,1,0,0,0);
@@ -123,6 +284,7 @@ void GPS_Module::processSentence(const String& line) {
             interrupts();
             _ppsCountAtLastRmc = snap;
         }
+        } // RMC con checksum y fecha validos
     }
 
     // ---- Parse GGA: num sats + HDOP ----
@@ -218,6 +380,10 @@ bool GPS_Module::getLastValidLocalDateTime(DateTime& outLocal) const {
 }
 
 bool GPS_Module::hasLastValidRmc() const { return _haveLastValidRmc; }
+
+RmcDiagnostics GPS_Module::getRmcDiagnostics() const {
+    return _rmcDiag; // solo accedida desde loop(), no desde ISR ni tarea WiFi.
+}
 
 unsigned long GPS_Module::getLastValidRmcAgeMs() const {
     if (!_haveLastValidRmc) return 0;

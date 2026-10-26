@@ -10,6 +10,35 @@ struct RmcData {
     int day = 0, month = 0, year = 0; // full year
 };
 
+// Diagnostico observacional de RMC: no valida la fase UTC del PPS.
+struct RmcDiagnostics {
+    uint32_t validas = 0;
+    uint32_t checksum_fallidos = 0;
+    uint32_t rechazadas = 0;
+    uint32_t saltos = 0;
+    uint32_t revision = 0;
+    uint32_t procesado_us = 0; // micros() al terminar de procesar RMC; NO recepcion fisica.
+    uint32_t intervalo_ms = 0;
+    int32_t ultimo_delta_s = 0;
+    int32_t ultimo_error_continuidad_s = 0;
+};
+
+// Consulta UBX-NAV-TIMEUTC: observacional; no certifica fase absoluta del PPS.
+struct UbxUtcDiagnostics {
+    uint32_t consultas = 0;
+    uint32_t respuestas = 0;
+    uint32_t checksum_fallos = 0;
+    bool recibido = false;
+    bool fecha_razonable = false;
+    uint8_t flags = 0;
+    uint32_t iTOW_ms = 0;
+    uint32_t tAcc_ns = 0;
+    int32_t nano_ns = 0;
+    uint16_t year = 0;
+    uint8_t month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    uint32_t recibido_ms = 0;
+};
+
 class GPS_Module {
 public:
     GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud = 9600);
@@ -24,11 +53,17 @@ public:
 
     void update();
 
+    // Poll liviano de UTC por UART existente. NO configura salida UBX continua.
+    // Requiere conexion fisica ESP32 TX -> RX del modulo GNSS.
+    void consultarUbxUtcSiCorresponde();
+    UbxUtcDiagnostics getUbxUtcDiagnostics() const;
+
     // RMC válida
     bool hasValidRmcRecent(unsigned long maxAgeMs) const;
     bool getLastValidLocalDateTime(DateTime& outLocal) const;
     bool hasLastValidRmc() const;
     unsigned long getLastValidRmcAgeMs() const;
+    RmcDiagnostics getRmcDiagnostics() const;
 
     // GNSS “alineado al PPS” usando el contador PPS interno de este módulo.
     // Sólo tiene sentido si se llamó begin(), no beginNmeaOnly().
@@ -81,6 +116,19 @@ private:
     RmcData _lastValidRmc;
     bool _haveLastValidRmc = false;
     unsigned long _lastValidRmcMs = 0;
+    RmcDiagnostics _rmcDiag;
+    UbxUtcDiagnostics _ubxUtc;
+
+    // Parser binario acotado al mensaje UBX-NAV-TIMEUTC (20 bytes).
+    uint8_t _ubxState = 0;
+    uint8_t _ubxClass = 0, _ubxId = 0;
+    uint8_t _ubxCkA = 0, _ubxCkB = 0;
+    uint16_t _ubxLength = 0, _ubxIndex = 0;
+    uint8_t _ubxPayload[64] = {};
+    uint32_t _ubxLastPollMs = 0;
+    bool consumirByteUbx(uint8_t byte);
+    void incluirEnChecksumUbx(uint8_t byte);
+    void interpretarUbxTimeUtc();
 
     // Base estable GNSS@PPS (sólo para PPS interno del GPS_Module)
     DateTime _lastRmcLocal = DateTime(2000,1,1,0,0,0);
