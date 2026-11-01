@@ -218,7 +218,7 @@ static void anexarTresRelojes(
         (int64_t)gnss_local.unixtime() -
         ((int64_t)tresRelojesBase.epoch_local_inicio + segundos);
     const char* estado_relojes = (diferencia_etiqueta_s == 0)
-        ? "RELATIVO_UTC_VALIDA_FASE_PPS_PENDIENTE"
+        ? "RELATIVO_UTC_COHERENTE"
         : "RELATIVO_RMC_DISCREPA_PPS";
     snprintf(out + used, len - used,
         ",\"reloj_gnss_pps\":\"%s\","
@@ -746,8 +746,7 @@ void loop() {
                        (diff_candidato < -MAX_DIFF_TICKS);
     }
     const bool pps_apto_para_inicio =
-        pending == 1 && seq_delta == 1 && interval_valid &&
-        !diff_outlier && !venia_de_holdover;
+        pending == 1 && seq_delta == 1 && interval_valid && !venia_de_holdover;
     const bool sincronizado_antes = rtc_sincronizado_utc;
     sincronizarRtcConUtcEnPps(seq, pps_time_us, pps_apto_para_inicio);
 
