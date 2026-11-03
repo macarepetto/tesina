@@ -104,6 +104,27 @@ void buildInitialPpsLogJson(
     const char* rtc_gnss_fields
 );
 
+// PPS detectado antes de poder iniciar las estadísticas con UTC validada.
+// Los campos de offset y Kalman se publican como null.
+void buildPpsPreUtcLogJson(
+    char* out,
+    size_t len,
+    const char* device_id,
+    int aging,
+    uint32_t now_ms,
+    uint32_t seq,
+    uint32_t pending,
+    uint32_t pps_period_us,
+    uint32_t ticks_raw,
+    uint32_t ticks_window,
+    uint32_t seq_delta,
+    uint32_t elapsed_us,
+    bool interval_valid,
+    bool diff_outlier,
+    bool primer_pps_utc,
+    const char* rtc_gnss_fields
+);
+
 void buildPpsLogJson(
     char* out,
     size_t len,

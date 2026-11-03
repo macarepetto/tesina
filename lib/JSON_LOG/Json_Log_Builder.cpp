@@ -252,6 +252,59 @@ void buildInitialPpsLogJson(
     buildLogJson(e, out, len);
 }
 
+void buildPpsPreUtcLogJson(
+    char* out,
+    size_t len,
+    const char* device_id,
+    int aging,
+    uint32_t now_ms,
+    uint32_t seq,
+    uint32_t pending,
+    uint32_t pps_period_us,
+    uint32_t ticks_raw,
+    uint32_t ticks_window,
+    uint32_t seq_delta,
+    uint32_t elapsed_us,
+    bool interval_valid,
+    bool diff_outlier,
+    bool primer_pps_utc,
+    const char* rtc_gnss_fields
+) {
+    const uint32_t elapsed_seconds_rounded =
+        (elapsed_us + 500000UL) / 1000000UL;
+
+    LogEvent e;
+    e.id = device_id;
+    e.aging = aging;
+    e.ms = now_ms;
+    e.modo = primer_pps_utc
+        ? "PPS_INICIO_UTC_SIN_MEDICION"
+        : "PPS_ESPERANDO_UTC";
+    e.first = false;
+    e.pps_seq = seq;
+    e.pps_pending = pending;
+    e.has_pps_period_us = true;
+    e.pps_period_us = pps_period_us;
+    e.has_ticks_raw = true;
+    e.ticks_raw = ticks_raw;
+    e.has_ticks_window = true;
+    e.ticks_window = ticks_window;
+    e.has_seq_delta = true;
+    e.seq_delta = seq_delta;
+    e.has_elapsed_us = true;
+    e.elapsed_us = elapsed_us;
+    e.interval_valid = interval_valid;
+    e.diff_outlier = diff_outlier;
+    e.missed_pps = elapsed_seconds_rounded > seq_delta
+        ? elapsed_seconds_rounded - seq_delta
+        : 0;
+    // Sin mediciones de offset ni de Kalman antes del comienzo experimental.
+    // Los valores por defecto de LogEvent producen null y flags false.
+    e.rtc_gnss_fields = rtc_gnss_fields;
+
+    buildLogJson(e, out, len);
+}
+
 void buildPpsLogJson(
     char* out,
     size_t len,

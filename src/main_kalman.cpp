@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include <string.h>
-#include "driver/pcnt.h"
+#include "RTC32K_Pcnt_Capture_Module.h"
 #include "Kalman_Filter.h"
 #include "GPS_Module.h"
 #include "RTC_Module.h"
 #include "WiFi_Module.h"
 #include "Telemetry_Queue_Module.h"
 #include "Json_Log_Builder.h"
+#include "Three_Clocks_Module.h"
+#include "RTC_GNSS_Diagnostics_Module.h"
 
 // ==================== PINES ====================
 
@@ -22,10 +24,6 @@ GPS_Module gps(Serial2, PIN_GPS_RX, PIN_GPS_TX, PIN_PPS_GPS, GPS_BAUD);
 RTC_Module rtc;
 
 // ==================== PCNT ====================
-#define PCNT_UNIT_USED    PCNT_UNIT_0
-#define PCNT_CHANNEL_USED PCNT_CHANNEL_0
-#define PCNT_HIGH_LIMIT 30000
-#define PCNT_LOW_LIMIT -30000
 #define PPS_TIME_TOLERANCE_US 200000UL
 
 static constexpr int64_t MAX_DIFF_TICKS = 10;
@@ -60,22 +58,9 @@ WiFi_Module wifiModule(
 // ==================== KALMAN ====================
 Kalman_Filter kalman;
 
-// ==================== VARIABLES COMPARTIDAS ISR / LOOP ====================
-portMUX_TYPE pcnt_mux = portMUX_INITIALIZER_UNLOCKED;
-
-volatile uint32_t pcnt_base = 0;
-volatile uint32_t ticks_raw_isr = 0;
-volatile uint32_t pps_seq = 0;
-volatile uint32_t pps_pending = 0;
-volatile uint32_t pps_time_us_isr = 0;
-volatile uint32_t pps_period_us_isr = 0;
-
 int8_t aging_aplicado = 0;
 
 // ==================== FECHA/HORA GNSS + RTC ====================
-
-// Para el log: consideramos GNSS válido sólo si la última RMC válida es reciente.
-static constexpr uint32_t GNSS_VALID_LOG_MAX_AGE_MS = 3000;
 
 // Ejecutar tareas secundarias con un ritmo acotado.
 // La medición PPS/PCNT se procesa primero; GNSS queda en background.
@@ -84,11 +69,8 @@ static constexpr uint32_t BACKGROUND_TASKS_PERIOD_MS = 20;
 
 // Cola + tarea de salida WiFi (CORE 0). El loop sólo encola cada JSON.
 Telemetry_Queue_Module telemetryQueue(wifiModule);
-
-// Observacion de la RMC respecto del ultimo PPS, sin alterar la ISR.
-static uint32_t ultima_revision_rmc_observada = 0;
-static int32_t ultimo_rmc_post_pps_us = -1;
-static uint32_t ultimo_rmc_pps_seq = 0;
+Three_Clocks_Module threeClocks;
+RTC_GNSS_Diagnostics_Module rtcGnssDiagnostics(gps, rtc, threeClocks);
 
 // ==================== INICIALIZACION DE HORA ====================
 // Exigimos RMC A + checksum (controlado por GPS_Module) y UBX-NAV-TIMEUTC
@@ -125,188 +107,6 @@ static bool utcListaParaInicializar(DateTime* rmc_out = nullptr) {
     return true;
 }
 
-// ==================== TRES RELOJES RELATIVOS ====================
-// Este comparador NO altera la hora interna del DS3231 ni el filtro.
-// Fijamos su epoca SOLAMENTE en el PPS donde se inicializo el RTC
-// usando una referencia UTC validada por el receptor.
-// GNSS: un segundo entero por PPS. RTC: tiempo transcurrido segun 32 kHz.
-// Kalman: tiempo RTC menos la deriva relativa estimada (phi - phi_inicio).
-// La asociacion entre la epoca RMC y el pulso fisico AUN NO ESTA VALIDADA.
-struct TresRelojesBase {
-    bool disponible = false;
-    uint32_t seq_inicio = 0;
-    uint32_t ticks_inicio = 0;
-    uint32_t epoch_local_inicio = 0;
-    double phi_inicio = 0.0;
-};
-static TresRelojesBase tresRelojesBase;
-
-static int64_t redondearMicrosegundos(double value) {
-    return (int64_t)(value >= 0.0 ? value + 0.5 : value - 0.5);
-}
-
-static void formatoHoraLocalUs(int64_t timestamp_us, char* out, size_t len) {
-    const uint32_t epoch_s = (uint32_t)(timestamp_us / 1000000LL);
-    const unsigned long fraccion_us =
-        (unsigned long)(timestamp_us % 1000000LL);
-    const DateTime dt(epoch_s);
-    snprintf(out, len, "%04u-%02u-%02uT%02u:%02u:%02u.%06lu",
-        (unsigned)dt.year(), (unsigned)dt.month(), (unsigned)dt.day(),
-        (unsigned)dt.hour(), (unsigned)dt.minute(), (unsigned)dt.second(),
-        fraccion_us);
-}
-
-static void anexarTresRelojes(
-    char* out, size_t len, bool pps_apto,
-    uint32_t seq, uint32_t ticks_raw,
-    const Kalman_State* kalman_state,
-    bool rmc_reciente, const DateTime& gnss_local)
-{
-    if (len == 0) return;
-    const size_t used = strlen(out);
-    if (used >= len) return;
-
-    // El comparador comienza en el mismo PPS del ajuste inicial del RTC.
-    // NO basta con recibir la primera RMC con estado A.
-    if (!tresRelojesBase.disponible && pps_apto &&
-        rtc_sincronizado_utc && rtc_sync_pps_seq == seq &&
-        kalman_state != nullptr && rmc_reciente) {
-        tresRelojesBase.disponible = true;
-        tresRelojesBase.seq_inicio = seq;
-        tresRelojesBase.ticks_inicio = ticks_raw;
-        tresRelojesBase.epoch_local_inicio = gnss_local.unixtime();
-        tresRelojesBase.phi_inicio = kalman_state->phi;
-    }
-
-    const bool utilizable = tresRelojesBase.disponible && pps_apto &&
-        kalman_state != nullptr && rmc_reciente &&
-        seq >= tresRelojesBase.seq_inicio &&
-        (seq - tresRelojesBase.seq_inicio) < 64800UL;
-
-    if (!utilizable) {
-        snprintf(out + used, len - used,
-            ",\"reloj_gnss_pps\":null,"
-            "\"reloj_rtc_32k\":null,"
-            "\"reloj_kalman\":null,"
-            "\"desfase_rtc_us\":null,"
-            "\"desfase_kalman_us\":null,"
-            "\"relojes_estado\":\"SIN_MUESTRA_COMPARABLE\"");
-        return;
-    }
-
-    const uint32_t segundos = seq - tresRelojesBase.seq_inicio;
-    const uint32_t ticks_32k = ticks_raw - tresRelojesBase.ticks_inicio;
-    const double transcurrido_rtc_us = (double)ticks_32k * TICK_US;
-    const double transcurrido_gnss_us = (double)segundos * 1000000.0;
-    // Desfase respecto del PPS inicial, no fase absoluta del calendario RTC.
-    const double desfase_rtc_us = transcurrido_rtc_us - transcurrido_gnss_us;
-    const double desfase_kalman_us = desfase_rtc_us -
-        (kalman_state->phi - tresRelojesBase.phi_inicio) * TICK_US;
-
-    const int64_t referencia_us =
-        ((int64_t)tresRelojesBase.epoch_local_inicio + segundos) * 1000000LL;
-    char hora_gnss[40], hora_rtc[40], hora_kalman[40];
-    formatoHoraLocalUs(referencia_us, hora_gnss, sizeof(hora_gnss));
-    formatoHoraLocalUs(referencia_us + redondearMicrosegundos(desfase_rtc_us),
-                       hora_rtc, sizeof(hora_rtc));
-    formatoHoraLocalUs(referencia_us + redondearMicrosegundos(desfase_kalman_us),
-                       hora_kalman, sizeof(hora_kalman));
-
-    // Una discrepancia persistente entre RMC y los segundos PPS es una alerta,
-    // no una autorizacion para corregir el reloj de referencia automaticamente.
-    const int64_t diferencia_etiqueta_s =
-        (int64_t)gnss_local.unixtime() -
-        ((int64_t)tresRelojesBase.epoch_local_inicio + segundos);
-    const char* estado_relojes = (diferencia_etiqueta_s == 0)
-        ? "RELATIVO_UTC_COHERENTE"
-        : "RELATIVO_RMC_DISCREPA_PPS";
-    snprintf(out + used, len - used,
-        ",\"reloj_gnss_pps\":\"%s\","
-        "\"reloj_rtc_32k\":\"%s\","
-        "\"reloj_kalman\":\"%s\","
-        "\"desfase_rtc_us\":%.3f,"
-        "\"desfase_kalman_us\":%.3f,"
-        "\"relojes_estado\":\"%s\"",
-        hora_gnss, hora_rtc, hora_kalman,
-        desfase_rtc_us, desfase_kalman_us, estado_relojes);
-}
-
-// Datos para identificar si el salto proviene del propio mensaje RMC,
-// del parser o de la asociacion (todavia hipotetica) entre RMC y PPS.
-static void anexarDiagnosticoRmc(char* out, size_t len,
-                                uint32_t seq, bool rmc_reciente,
-                                const DateTime& rmc_local) {
-    const size_t used = strlen(out);
-    if (used >= len) return;
-    const RmcDiagnostics d = gps.getRmcDiagnostics();
-    char dif_s[24] = "null";
-    if (tresRelojesBase.disponible && rmc_reciente &&
-        seq >= tresRelojesBase.seq_inicio) {
-        const int64_t estimado = (int64_t)tresRelojesBase.epoch_local_inicio +
-                                 (seq - tresRelojesBase.seq_inicio);
-        const int64_t diferencia = (int64_t)rmc_local.unixtime() - estimado;
-        snprintf(dif_s, sizeof(dif_s), "%lld", (long long)diferencia);
-    }
-    char lag_us[24] = "null";
-    if (ultimo_rmc_post_pps_us >= 0 && d.revision != 0) {
-        snprintf(lag_us, sizeof(lag_us), "%ld", (long)ultimo_rmc_post_pps_us);
-    }
-    snprintf(out + used, len - used,
-        ",\"rmc_checksum_fallos\":%lu,"
-        "\"rmc_rechazadas\":%lu,"
-        "\"rmc_saltos\":%lu,"
-        "\"rmc_delta_s\":%ld,"
-        "\"rmc_error_continuidad_s\":%ld,"
-        "\"rmc_intervalo_ms\":%lu,"
-        "\"rmc_edad_ms\":%lu,"
-        "\"rmc_vs_pps_s\":%s,"
-        "\"rmc_post_pps_us\":%s,"
-        "\"rmc_pps_seq\":%lu",
-        (unsigned long)d.checksum_fallidos,
-        (unsigned long)d.rechazadas,
-        (unsigned long)d.saltos,
-        (long)d.ultimo_delta_s,
-        (long)d.ultimo_error_continuidad_s,
-        (unsigned long)d.intervalo_ms,
-        (unsigned long)(d.revision ? gps.getLastValidRmcAgeMs() : 0UL),
-        dif_s, lag_us, (unsigned long)ultimo_rmc_pps_seq);
-}
-
-// Diagnostico oficial de validez UTC informado por el NEO-6 (UBX-NAV-TIMEUTC).
-// Solo agrega campos al JSON: NO cambia la hora GNSS-PPS, RTC ni Kalman.
-static void anexarDiagnosticoUbx(char* out, size_t len) {
-    const size_t used = strlen(out);
-    if (used >= len) return;
-    const UbxUtcDiagnostics u = gps.getUbxUtcDiagnostics();
-    char hora[40] = "null";
-    if (u.recibido && u.fecha_razonable) {
-        const DateTime utc(u.year, u.month, u.day, u.hour, u.minute, u.second);
-        const uint32_t epoch = utc.unixtime() - 3UL * 3600UL;
-        char iso[32];
-        RTC_Module::dateTimeToIsoLocal(DateTime(epoch), iso, sizeof(iso));
-        snprintf(hora, sizeof(hora), "\"%s\"", iso);
-    }
-    const char* valido = !u.recibido ? "null" :
-        ((u.flags & 0x07) == 0x07 ? "true" : "false");
-    const uint32_t edad = u.recibido ? (millis() - u.recibido_ms) : 0UL;
-    snprintf(out + used, len - used,
-        ",\"ubx_polls\":%lu,"
-        "\"ubx_respuestas\":%lu,"
-        "\"ubx_checksum_fallos\":%lu,"
-        "\"ubx_valid_utc\":%s,"
-        "\"ubx_flags\":%u,"
-        "\"ubx_utc_hora\":%s,"
-        "\"ubx_tacc_ns\":%lu,"
-        "\"ubx_nano_ns\":%ld,"
-        "\"ubx_itow_ms\":%lu,"
-        "\"ubx_edad_ms\":%lu",
-        (unsigned long)u.consultas,
-        (unsigned long)u.respuestas,
-        (unsigned long)u.checksum_fallos,
-        valido, (unsigned)u.flags, hora,
-        (unsigned long)u.tAcc_ns, (long)u.nano_ns,
-        (unsigned long)u.iTOW_ms, (unsigned long)edad);
-}
 
 // Se llama una sola vez, DESPUES de capturar un PPS y FUERA de la ISR.
 // La escritura I2C arranca cerca de ese PPS: no supone que la fase del
@@ -329,79 +129,22 @@ static void sincronizarRtcConUtcEnPps(uint32_t seq, uint32_t pps_us,
     }
 }
 
-// Estado de la compuerta, independiente del diagnostico UBX existente.
-static void anexarEstadoInicializacion(char* out, size_t len) {
-    const size_t used = strlen(out);
-    if (used >= len) return;
-    char secuencia[24] = "null";
-    char retardo[24] = "null";
-    char inicio_estadistica[24] = "null";
-    if (estadistica_inicio_pps_seq != 0) {
-        snprintf(inicio_estadistica, sizeof(inicio_estadistica), "%lu",
-                 (unsigned long)estadistica_inicio_pps_seq);
-    }
-    if (rtc_sincronizado_utc) {
-        snprintf(secuencia, sizeof(secuencia), "%lu",
-                 (unsigned long)rtc_sync_pps_seq);
-        snprintf(retardo, sizeof(retardo), "%lu",
-                 (unsigned long)rtc_sync_inicio_post_pps_us);
-    }
-    snprintf(out + used, len - used,
-        ",\"utc_referencia_lista\":%s,"
-        "\"rtc_sync_utc\":%s,"
-        "\"rtc_sync_pps_seq\":%s,"
-        "\"rtc_sync_inicio_post_pps_us\":%s,"
-        "\"estadistica_inicio_pps_seq\":%s",
-        utcListaParaInicializar() ? "true" : "false",
-        rtc_sincronizado_utc ? "true" : "false",
-        secuencia, retardo, inicio_estadistica);
-}
-
-void buildRtcGnssJsonFields(char* out, size_t len,
-                            bool pps_apto = false,
-                            uint32_t seq = 0,
-                            uint32_t ticks_raw = 0,
-                            const Kalman_State* kalman_state = nullptr) {
-    char rtc_json[40];
-    char gnss_json[40];
-
-    snprintf(rtc_json, sizeof(rtc_json), "null");
-    snprintf(gnss_json, sizeof(gnss_json), "null");
-
-    DateTime rtc_dt(2000, 1, 1, 0, 0, 0);
-    const bool rtc_ok = rtc.readDateTime(rtc_dt);
-    if (rtc_ok) {
-        char rtc_iso[32];
-        RTC_Module::dateTimeToIsoLocal(rtc_dt, rtc_iso, sizeof(rtc_iso));
-        snprintf(rtc_json, sizeof(rtc_json), "\"%s\"", rtc_iso);
-    }
-
-    DateTime gnss_local(2000, 1, 1, 0, 0, 0);
-    const bool gnss_ok =
-        gps.hasValidRmcRecent(GNSS_VALID_LOG_MAX_AGE_MS) &&
-        gps.getLastValidLocalDateTime(gnss_local);
-
-    if (gnss_ok) {
-        char gnss_iso[32];
-        RTC_Module::dateTimeToIsoLocal(gnss_local, gnss_iso, sizeof(gnss_iso));
-        snprintf(gnss_json, sizeof(gnss_json), "\"%s\"", gnss_iso);
-    }
-
-    snprintf(
-        out,
-        len,
-        ",\"gnss_valido\":%s,\"rtc_hora\":%s,\"gnss_hora\":%s",
-        gnss_ok ? "true" : "false",
-        rtc_json,
-        gnss_json
-    );
-
-    // La comprobación de RMC se hace sin nuevas operaciones UART ni I2C.
-    anexarTresRelojes(out, len, pps_apto, seq, ticks_raw, kalman_state,
-        gnss_ok && gps.hasValidRmcRecent(1500), gnss_local);
-    anexarDiagnosticoRmc(out, len, seq, gnss_ok, gnss_local);
-    anexarDiagnosticoUbx(out, len);
-    anexarEstadoInicializacion(out, len);
+// El main conserva solo las decisiones de inicializacion y las referencias.
+// El armado y los diagnosticos JSON viven en RTC_GNSS_Diagnostics_Module.
+static void buildRtcGnssJsonFields(
+    char* out, size_t len, bool pps_apto = false,
+    uint32_t seq = 0, uint32_t ticks_raw = 0,
+    const Kalman_State* state = nullptr,
+    bool holdover_estimated = false) {
+    RTC_GNSS_InitState init;
+    init.utc_reference_ready = utcListaParaInicializar();
+    init.rtc_synced_utc = rtc_sincronizado_utc;
+    init.rtc_sync_pps_seq = rtc_sync_pps_seq;
+    init.rtc_sync_start_delay_us = rtc_sync_inicio_post_pps_us;
+    init.statistics_start_pps_seq = estadistica_inicio_pps_seq;
+    rtcGnssDiagnostics.buildJsonFields(out, len, init,
+                                        pps_apto, seq, ticks_raw, state,
+                                        holdover_estimated);
 }
 
 
@@ -417,98 +160,7 @@ void runBackgroundTasks() {
 
     gps.update();
     gps.consultarUbxUtcSiCorresponde();
-    const RmcDiagnostics d = gps.getRmcDiagnostics();
-    if (d.revision != 0 && d.revision != ultima_revision_rmc_observada) {
-        ultima_revision_rmc_observada = d.revision;
-        // PPS capturado por la ISR actual; SOLO leemos un snapshot.
-        uint32_t seqSnap = 0;
-        uint32_t ppsUsSnap = 0;
-        portENTER_CRITICAL(&pcnt_mux);
-        seqSnap = pps_seq;
-        ppsUsSnap = pps_time_us_isr;
-        portEXIT_CRITICAL(&pcnt_mux);
-        ultimo_rmc_pps_seq = seqSnap;
-        const int32_t diferencia_us = (int32_t)(d.procesado_us - ppsUsSnap);
-        ultimo_rmc_post_pps_us = (seqSnap != 0 &&
-                                  diferencia_us >= 0 &&
-                                  diferencia_us <= 1000000)
-                                 ? diferencia_us : -1;
-    }
-}
-
-// ==================== INTERRUPCIONES ====================
-
-void IRAM_ATTR onPCNTLimit(void* arg) {
-    uint32_t status = 0;
-    pcnt_get_event_status(PCNT_UNIT_USED, &status);
-    if (status & PCNT_EVT_H_LIM) {
-        portENTER_CRITICAL_ISR(&pcnt_mux);
-        pcnt_base += PCNT_HIGH_LIMIT;
-        portEXIT_CRITICAL_ISR(&pcnt_mux);
-    }
-}
-
-void IRAM_ATTR onPPS() {
-    const uint32_t now_us = micros();
-    int16_t hw_count = 0;
-    portENTER_CRITICAL_ISR(&pcnt_mux);
-    pcnt_get_counter_value(PCNT_UNIT_USED, &hw_count);
-    if (pps_time_us_isr != 0) {
-        pps_period_us_isr = now_us - pps_time_us_isr;
-    } else {
-        pps_period_us_isr = 0;
-    }
-    pps_time_us_isr = now_us;
-    ticks_raw_isr = pcnt_base + (uint32_t)hw_count;
-    pps_seq++;
-    pps_pending++;
-    portEXIT_CRITICAL_ISR(&pcnt_mux);
-}
-
-// ==================== CONFIGURACIÓN ====================
-
-void setupPCNT() {
-    pinMode(PIN_32K_RTC, INPUT_PULLUP);
-    pcnt_config_t config = {};
-    config.pulse_gpio_num = PIN_32K_RTC;
-    config.ctrl_gpio_num = PCNT_PIN_NOT_USED;
-    config.pos_mode = PCNT_COUNT_INC;
-    config.neg_mode = PCNT_COUNT_DIS;
-    config.lctrl_mode = PCNT_MODE_KEEP;
-    config.hctrl_mode = PCNT_MODE_KEEP;
-    config.counter_h_lim = PCNT_HIGH_LIMIT;
-    config.counter_l_lim = PCNT_LOW_LIMIT;
-    config.unit = PCNT_UNIT_USED;
-    config.channel = PCNT_CHANNEL_USED;
-    if (pcnt_unit_config(&config) != ESP_OK) {
-        Serial.println("ERROR: no se pudo configurar PCNT");
-        while (true) {
-            delay(1000);
-        }
-    }
-    pcnt_filter_disable(PCNT_UNIT_USED);
-    pcnt_counter_pause(PCNT_UNIT_USED);
-    pcnt_counter_clear(PCNT_UNIT_USED);
-    pcnt_base = 0;
-    pcnt_event_enable(PCNT_UNIT_USED, PCNT_EVT_H_LIM);
-    esp_err_t result = pcnt_isr_service_install(0);
-    if (result != ESP_OK && result != ESP_ERR_INVALID_STATE) {
-        Serial.println("ERROR: no se pudo instalar la ISR de PCNT");
-        while (true) {
-            delay(1000);
-        }
-    }
-    if (pcnt_isr_handler_add(
-            PCNT_UNIT_USED,
-            onPCNTLimit,
-            nullptr
-        ) != ESP_OK) {
-        Serial.println("ERROR: no se pudo registrar la ISR de PCNT");
-        while (true) {
-            delay(1000);
-        }
-    }
-    pcnt_counter_resume(PCNT_UNIT_USED);
+    rtcGnssDiagnostics.observeRmcAfterPps();
 }
 
 void setup() {
@@ -522,7 +174,7 @@ void setup() {
     }
 
     // No llamamos gps.begin() porque ese begin() también engancha una ISR al PPS.
-    // El PPS de máxima prioridad sigue siendo únicamente onPPS().
+    // La unica ISR del PPS la instala RTC32K_Pcnt_Capture::begin().
     gps.beginNmeaOnly();
     Serial.println("GNSS NMEA iniciado por GPS_Module sobre Serial2");
     Serial.print("GPS RX GPIO: ");
@@ -551,9 +203,7 @@ void setup() {
 
     aging_aplicado = rtc.getAppliedAging();
     Serial.printf("Aging aplicado y verificado: %d\n", (int)aging_aplicado);
-    setupPCNT();
-    pinMode(PIN_PPS_GPS, INPUT);
-    attachInterrupt(digitalPinToInterrupt(PIN_PPS_GPS), onPPS, RISING);
+    RTC32K_Pcnt_Capture::begin(PIN_32K_RTC, PIN_PPS_GPS);
     if (!telemetryQueue.begin()) {
         Serial.println("ERROR: no se pudo crear la cola/tarea de telemetria");
         while (true) {
@@ -561,50 +211,6 @@ void setup() {
         }
     }
     Serial.println("PCNT iniciado. Telemetria en CORE 0. Esperando PPS...");
-}
-
-// Diagnostico del PPS ANTES de habilitar el experimento.
-// Mantiene contadores fisicos/estado UTC, pero deja TODOS los campos de
-// offset y Kalman como null para impedir mezclarlos con estadisticas.
-// No modifica el constructor JSON compartido del proyecto estable.
-static void buildPpsPreUtcLogJson(
-    char* out, size_t len, uint32_t now_ms, uint32_t seq,
-    uint32_t pending, uint32_t periodo_us,
-    uint32_t ticks_raw, uint32_t ticks_window, uint32_t seq_delta,
-    uint32_t elapsed_us, bool interval_valid, bool diff_outlier,
-    bool primer_pps_utc, const char* rtc_gnss_fields)
-{
-    const uint32_t elapsed_seconds_rounded = (elapsed_us + 500000UL) / 1000000UL;
-    const uint32_t missed_pps = elapsed_seconds_rounded > seq_delta
-        ? elapsed_seconds_rounded - seq_delta : 0;
-    snprintf(out, len,
-        "{\"id\":\"%s\",\"aging\":%d,\"ms\":%lu,"
-        "\"modo\":\"%s\",\"first\":false,\"pps_seq\":%lu,"
-        "\"pps_pending\":%lu,\"pps_period_us\":%lu,"
-        "\"ms_since_last_pps\":0,\"holdover_steps\":0,"
-        "\"offset_medido_disponible\":false,"
-        "\"kalman_prediccion\":false,\"kalman_actualizado\":false,"
-        "\"ticks\":null,\"ticks_window\":%lu,\"ticks_raw\":%lu,"
-        "\"seq_delta\":%lu,\"elapsed_us\":%lu,"
-        "\"interval_valid\":%s,\"diff_outlier\":%s,"
-        "\"missed_pps\":%lu,\"diff\":null,"
-        "\"offset_ticks\":null,\"offset_us\":null,"
-        "\"kalman_medicion\":\"none\",\"kalman_z_phi\":null,"
-        "\"kalman_phi\":null,\"kalman_phi_us\":null,"
-        "\"kalman_f\":null,\"kalman_p00\":null,"
-        "\"kalman_p01\":null,\"kalman_p10\":null,"
-        "\"kalman_p11\":null,\"kalman_y_phi\":null,"
-        "\"kalman_k_phi\":null,\"kalman_k_f\":null,"
-        "\"residual_us\":null%s}",
-        DEVICE_ID, (int)aging_aplicado, (unsigned long)now_ms,
-        primer_pps_utc ? "PPS_INICIO_UTC_SIN_MEDICION" : "PPS_ESPERANDO_UTC",
-        (unsigned long)seq, (unsigned long)pending,
-        (unsigned long)periodo_us, (unsigned long)ticks_window,
-        (unsigned long)ticks_raw, (unsigned long)seq_delta,
-        (unsigned long)elapsed_us,
-        interval_valid ? "true" : "false",
-        diff_outlier ? "true" : "false",
-        (unsigned long)missed_pps, rtc_gnss_fields);
 }
 
 // ==================== MEDICIÓN ====================
@@ -620,23 +226,13 @@ void loop() {
     static uint32_t last_holdover_predict_ms = 0;
     static uint32_t holdover_steps = 0;
     static bool en_holdover = false;
-    uint32_t ticks_raw = 0;
-    uint32_t seq = 0;
-    uint32_t pending = 0;
-    uint32_t pps_time_us = 0;
-    uint32_t pps_period_us = 0;
-    bool hay_muestra = false;
-    portENTER_CRITICAL(&pcnt_mux);
-    if (pps_pending > 0) {
-        ticks_raw = ticks_raw_isr;
-        seq = pps_seq;
-        pending = pps_pending;
-        pps_time_us = pps_time_us_isr;
-        pps_period_us = pps_period_us_isr;
-        pps_pending = 0;
-        hay_muestra = true;
-    }
-    portEXIT_CRITICAL(&pcnt_mux);
+    RTC32K_Pcnt_Capture::PpsSample muestra_pps;
+    const bool hay_muestra = RTC32K_Pcnt_Capture::consumePps(muestra_pps);
+    const uint32_t ticks_raw = muestra_pps.ticks_raw;
+    const uint32_t seq = muestra_pps.seq;
+    const uint32_t pending = muestra_pps.pending;
+    const uint32_t pps_time_us = muestra_pps.pps_time_us;
+    const uint32_t pps_period_us = muestra_pps.pps_period_us;
     // ============================================================
     // CASO 1: NO LLEGÓ PPS NUEVO
     // ============================================================
@@ -665,7 +261,13 @@ void loop() {
             kalman.predict();
             Kalman_State kalman_state = kalman.getState();
             char rtc_gnss_fields[1024];
-            buildRtcGnssJsonFields(rtc_gnss_fields, sizeof(rtc_gnss_fields));
+            uint32_t ticks_actuales = 0;
+            const bool pcnt_ok =
+                RTC32K_Pcnt_Capture::snapshotCurrentTicks(ticks_actuales);
+            buildRtcGnssJsonFields(
+                rtc_gnss_fields, sizeof(rtc_gnss_fields),
+                false, 0, ticks_actuales,
+                pcnt_ok ? &kalman_state : nullptr, pcnt_ok);
 
             char json[1800];
             buildHoldoverLogJson(
@@ -767,7 +369,8 @@ void loop() {
                                rtc_sincronizado_utc ? &estado_inicial : nullptr);
         char json[1800];
         buildPpsPreUtcLogJson(
-            json, sizeof(json), now_ms, seq, pending, pps_period_us,
+            json, sizeof(json), DEVICE_ID, (int)aging_aplicado,
+            now_ms, seq, pending, pps_period_us,
             ticks_raw, ticks_window, seq_delta, elapsed_us,
             interval_valid, diff_outlier, rtc_sincronizado_utc,
             rtc_gnss_fields);
@@ -830,6 +433,12 @@ void loop() {
         (elapsed_seconds_rounded > seq_delta)
             ? elapsed_seconds_rounded - seq_delta
             : 0;
+    // El numero de ISR PPS no equivale a segundos civiles si hubo una pausa.
+    // Reconstruir solo los segundos respaldados por micros() Y el RTC 32 kHz.
+    // Si no coinciden, el comparador suspende sus tres horas hasta reanclar
+    // tres muestras consecutivas, SIN reiniciar RTC ni Kalman.
+    threeClocks.observePpsInterval(
+        venia_de_holdover, elapsed_us, seq_delta, pending, ticks_window);
     const bool offset_medido_disponible =
         interval_valid &&
         !diff_outlier &&
