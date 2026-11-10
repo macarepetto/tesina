@@ -184,20 +184,15 @@ void Kalman_Filter::updatePhi(double z_phi) {
 void Kalman_Filter::updateF(double z_f) {
     /*
         Caso:
-
             z = f
-
             H = [0 1]
-
             R = r_f
 
         Predicción de la medición:
-
             z_pred = H x_pred
             z_pred = f
 
         Innovación:
-
             y = z - z_pred
     */
 
@@ -206,18 +201,14 @@ void Kalman_Filter::updateF(double z_f) {
 
     /*
         S = H P H^T + R
-
         Como H = [0 1]:
-
-            S = p11 + r_f
+        S = p11 + r_f
     */
     const double S = p11 + cfg.r_f;
 
     /*
         K = P H^T S^-1
-
         Como H = [0 1]:
-
             K = [ p01 / S ]
                 [ p11 / S ]
     */
@@ -226,7 +217,6 @@ void Kalman_Filter::updateF(double z_f) {
 
     /*
         Actualización del estado:
-
             x = x_pred + K y
     */
     phi = phi + k0 * y;
@@ -236,7 +226,6 @@ void Kalman_Filter::updateF(double z_f) {
         P = (I - K H) P
 
         con:
-
             K = [ k0 ]
                 [ k1 ]
 
@@ -268,7 +257,6 @@ void Kalman_Filter::updateF(double z_f) {
 void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
     /*
         Caso:
-
             z = [ phi ]
                 [  f  ]
 
@@ -276,11 +264,9 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
                 [0 1]
 
         Como H es identidad:
-
             z_pred = x_pred
 
         Innovación:
-
             y = z - z_pred
     */
 
@@ -289,9 +275,7 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
 
     /*
         S = H P H^T + R
-
         Como H = I:
-
             S = P + R
 
         con:
@@ -300,7 +284,6 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
                 [   0    r_f ]
 
         Entonces:
-
             S = [ p00 + r_phi      p01     ]
                 [    p10       p11 + r_f  ]
     */
@@ -312,12 +295,10 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
 
     /*
         S^-1 para matriz 2x2:
-
             S^-1 = 1/det * [ s11  -s01 ]
                           [ -s10   s00 ]
 
         donde:
-
             det = s00*s11 - s01*s10
     */
 
@@ -334,9 +315,7 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
 
     /*
         K = P H^T S^-1
-
         Como H = I:
-
             K = P S^-1
     */
 
@@ -354,9 +333,7 @@ void Kalman_Filter::updatePhiAndF(double z_phi, double z_f) {
 
     /*
         P = (I - K H) P
-
         Como H = I:
-
             P = (I - K) P
     */
 

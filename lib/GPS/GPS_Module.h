@@ -47,10 +47,6 @@ public:
     // del sistema, por ejemplo el main junto con PCNT.
     void beginNmeaOnly();
 
-    // Inicia UART/NMEA y además engancha la ISR PPS interna del módulo GPS.
-    // No usar si el PPS ya se usa en otra ISR del sistema.
-    void begin();
-
     void update();
 
     // Poll liviano de UTC por UART existente. NO configura salida UBX continua.
@@ -84,12 +80,6 @@ public:
     float getGsaPdop() const;
     float getGsaHdop() const;
     float getGsaVdop() const;
-
-    // PPS interno del GPS_Module
-    unsigned long getPpsPulseCount() const;
-    unsigned long getPpsPeriodUs() const;
-    bool hasSeenPps() const;
-    unsigned long getLastPpsUs() const;
 
 private:
     HardwareSerial& _serial;
@@ -141,15 +131,6 @@ private:
     unsigned long _cntGGA   = 0;
     unsigned long _cntGSA   = 0;
     unsigned long _cntOTROS = 0;
-
-    // PPS interno (static para ISR)
-    static volatile unsigned long _ppsPulses;
-    static volatile unsigned long _ppsLastUs;
-    static volatile unsigned long _ppsPeriodUs;
-    static volatile bool          _ppsSeen;
-    static volatile unsigned long _ppsLastUsValid;
-
-    static void IRAM_ATTR ppsISR();
 
     void processSentence(const String& line);
     void closeSentenceIfNeeded();

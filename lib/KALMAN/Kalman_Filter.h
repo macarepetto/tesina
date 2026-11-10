@@ -4,17 +4,13 @@
 #include <Arduino.h>
 
 /*
-    Traducción directa del apunte de Kalman.
+    Transcripción directa del apunte de Kalman.
 
     Estado:
-
         x = [ phi ]
             [  f  ]
-
     Modelo:
-
         x(k+1) = F x(k) + w(k)
-
         phi(k+1) = phi(k) + f(k) + w_phi
         f(k+1)   = f(k) + w_f
 
@@ -22,38 +18,28 @@
             [0 1]
 
     Ruido del proceso:
-
         w ~ N(0, Q)
-
         Q = E[w w^T]
-
         Q = [ sigma_phi^2      0      ]
             [      0       sigma_f^2 ]
 
     Medición:
-
         z = H x + v
-
         v ~ N(0, R)
-
         R = E[v v^T]
 
     Predicción:
-
         x_pred(k) = F x_pred(k-1)
         P_pred(k) = F P_pred(k-1) F^T + Q
 
     Error de Estimación:
-
         e  = x - x_pred
 
     Innovación:
-
         y = z - H x_pred
         S = H P_pred H^T + R
 
     Actualización:
-
         K = P_pred H^T S^-1
         x = x_pred + K y
         P = (I - K H) P_pred
@@ -74,7 +60,6 @@ struct Kalman_Config {
 
     /*
         R para el caso en que se mide phi:
-
             z = phi
             H = [1 0]
             R = r_phi
@@ -83,7 +68,6 @@ struct Kalman_Config {
 
     /*
         R para el caso en que se mide f:
-
             z = f
             H = [0 1]
             R = r_f
@@ -92,11 +76,9 @@ struct Kalman_Config {
 
     /*
         P inicial:
-
             P = E[e e^T]
 
         donde:
-
             e = x_real - x_pred
 
         P representa la incertidumbre de la estimación.

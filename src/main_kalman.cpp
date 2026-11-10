@@ -9,15 +9,17 @@
 #include "Json_Log_Builder.h"
 #include "Three_Clocks_Module.h"
 #include "RTC_GNSS_Diagnostics_Module.h"
+#include "Physical_Event_Module.h"
+#include "RTC_SQW_Clock_Module.h"
 
 // ==================== PINES ====================
 
 #define PIN_32K_RTC 18
 #define PIN_PPS_GPS 27
-
-// ==================== GNSS UART / NMEA ====================
+#define PIN_SQW_RTC 19
 #define PIN_GPS_RX 16
 #define PIN_GPS_TX 17
+#define PIN_PULSADOR 13
 #define GPS_BAUD 9600
 
 GPS_Module gps(Serial2, PIN_GPS_RX, PIN_GPS_TX, PIN_PPS_GPS, GPS_BAUD);
@@ -37,6 +39,7 @@ static constexpr uint32_t HOLDOVER_STEP_MS = 1000;
 
 // ==================== AGING DS3231 ====================
 static constexpr int8_t AGING_VALUE = -13;
+int8_t aging_aplicado = 0;
 
 // ==================== WIFI ====================
 const char* WIFI_SSID = "PATAN";
@@ -45,8 +48,6 @@ const char* SERVER_IP = "192.168.0.119";
 const uint16_t SERVER_PORT = 8080;
 const char* DEVICE_ID = "esp32-prototipo-1";
 
-//WiFiClient client;
-
 WiFi_Module wifiModule(
     WIFI_SSID,
     WIFI_PASS,
@@ -54,28 +55,19 @@ WiFi_Module wifiModule(
     SERVER_PORT,
     DEVICE_ID
 );
+Telemetry_Queue_Module telemetryQueue(wifiModule);
 
 // ==================== KALMAN ====================
 Kalman_Filter kalman;
 
-int8_t aging_aplicado = 0;
-
 // ==================== FECHA/HORA GNSS + RTC ====================
-
-// Ejecutar tareas secundarias con un ritmo acotado.
-// La medición PPS/PCNT se procesa primero; GNSS queda en background.
-// La comunicación WiFi se procesa en CORE 0 con Telemetry_Queue_Module.
 static constexpr uint32_t BACKGROUND_TASKS_PERIOD_MS = 20;
-
-// Cola + tarea de salida WiFi (CORE 0). El loop sólo encola cada JSON.
-Telemetry_Queue_Module telemetryQueue(wifiModule);
 Three_Clocks_Module threeClocks;
 RTC_GNSS_Diagnostics_Module rtcGnssDiagnostics(gps, rtc, threeClocks);
 
 // ==================== INICIALIZACION DE HORA ====================
 // Exigimos RMC A + checksum (controlado por GPS_Module) y UBX-NAV-TIMEUTC
 // reciente, con validTOW, validWKN y validUTC activos.
-// Seguimos SIN certificar la fase fisica UTC-PPS: es la siguiente validacion.
 static constexpr uint32_t UTC_UBX_MAX_AGE_MS = 3000;
 static constexpr uint32_t RTC_SYNC_MAX_POST_PPS_US = 50000;
 static bool rtc_sincronizado_utc = false;
@@ -95,8 +87,6 @@ static bool utcListaParaInicializar(DateTime* rmc_out = nullptr) {
     DateTime rmc_local(2000, 1, 1, 0, 0, 0);
     if (!gps.getLastValidLocalDateTime(rmc_local)) return false;
 
-    // La encuesta UBX es cada 2 s: en las corridas, la ultima hora UBX
-    // tiene 0 o 1 s menos que la ultima RMC al momento del PPS.
     // No aceptar dos escalas UTC que discrepen por varios segundos.
     const DateTime ubx_utc(u.year, u.month, u.day, u.hour, u.minute, u.second);
     const int64_t diferencia_s =
@@ -123,14 +113,14 @@ static void sincronizarRtcConUtcEnPps(uint32_t seq, uint32_t pps_us,
     if (inicio_post_pps_us > RTC_SYNC_MAX_POST_PPS_US) return;
 
     if (rtc.setFromDateTime(gps_local)) {
+        RTC_SQW_Clock::invalidateOnCalendarWrite();
         rtc_sincronizado_utc = true;
         rtc_sync_pps_seq = seq;
         rtc_sync_inicio_post_pps_us = inicio_post_pps_us;
     }
 }
 
-// El main conserva solo las decisiones de inicializacion y las referencias.
-// El armado y los diagnosticos JSON viven en RTC_GNSS_Diagnostics_Module.
+// Decisiones de inicializacion y las referencias, el armado y los diagnosticos JSON se encuentran en RTC_GNSS_Diagnostics_Module.
 static void buildRtcGnssJsonFields(
     char* out, size_t len, bool pps_apto = false,
     uint32_t seq = 0, uint32_t ticks_raw = 0,
@@ -145,6 +135,9 @@ static void buildRtcGnssJsonFields(
     rtcGnssDiagnostics.buildJsonFields(out, len, init,
                                         pps_apto, seq, ticks_raw, state,
                                         holdover_estimated);
+    // Cuarto reloj
+    RTC_SQW_Clock::appendClockJson(out, len,
+                                  seq != 0 || holdover_estimated, ticks_raw);
 }
 
 
@@ -173,8 +166,6 @@ void setup() {
         }
     }
 
-    // No llamamos gps.begin() porque ese begin() también engancha una ISR al PPS.
-    // La unica ISR del PPS la instala RTC32K_Pcnt_Capture::begin().
     gps.beginNmeaOnly();
     Serial.println("GNSS NMEA iniciado por GPS_Module sobre Serial2");
     Serial.print("GPS RX GPIO: ");
@@ -204,6 +195,9 @@ void setup() {
     aging_aplicado = rtc.getAppliedAging();
     Serial.printf("Aging aplicado y verificado: %d\n", (int)aging_aplicado);
     RTC32K_Pcnt_Capture::begin(PIN_32K_RTC, PIN_PPS_GPS);
+    if (!RTC_SQW_Clock::begin(PIN_SQW_RTC)) {
+        Serial.println("ADVERTENCIA: RTC/SQW no disponible; reloj_rtc_calendario_sqw sera null");
+    }
     if (!telemetryQueue.begin()) {
         Serial.println("ERROR: no se pudo crear la cola/tarea de telemetria");
         while (true) {
@@ -211,10 +205,13 @@ void setup() {
         }
     }
     Serial.println("PCNT iniciado. Telemetria en CORE 0. Esperando PPS...");
+    // Inicializacion del pulsador compartido.
+    Physical_Event::begin(PIN_PULSADOR);
+
+    Serial.println("Evento fisico iniciado en GPIO13");
 }
 
 // ==================== MEDICIÓN ====================
-
 void loop() {
     // Primero se atiende PPS/PCNT. GNSS queda en background; los JSON van por WiFi en CORE 0.
     static bool hay_anterior = false;
@@ -237,10 +234,19 @@ void loop() {
     // CASO 1: NO LLEGÓ PPS NUEVO
     // ============================================================
     if (!hay_muestra) {
+        // Atender SQW aun cuando no llegue GNSS/PPS (tambien en holdover).
+        RTC_SQW_Clock::service(rtc);
         runBackgroundTasks();
 
+        // Publicar los eventos del pulsador capturados
+         Physical_Event::publishPending(
+            DEVICE_ID,
+            telemetryQueue
+        );
+
+
         // Antes de UTC valida/RTC sincronizado no hay filtro que predecir:
-        // tampoco se registra HOLDOVER como parte del experimento.
+        // tampoco se registra HOLDOVER.
         if (!hay_anterior || !rtc_sincronizado_utc) {
             return;
         }
@@ -253,11 +259,8 @@ void loop() {
         if (pps_perdido && corresponde_predecir) {
             en_holdover = true;
             holdover_steps++;
-            // En holdover NO hay medición nueva.
+
             // Solo se aplica la etapa de predicción:
-            //
-            //     phi(k+1) = phi(k) + f(k)
-            //     f(k+1)   = f(k)
             kalman.predict();
             Kalman_State kalman_state = kalman.getState();
             char rtc_gnss_fields[1024];
@@ -339,9 +342,7 @@ void loop() {
     int64_t diff = 0;
     bool diff_outlier = false;
 
-    // El hardware PPS/PCNT siempre cuenta, incluso antes de UTC valida.
-    // Aqui evaluamos SOLO si el intervalo fisico sirve para inicializar.
-    // No acumulamos offset ni hacemos predict/update antes de ese instante.
+    // No acumulamos offset ni hacemos predict/update antes de que se sincronicen con la primer UTC válida.
     if (interval_valid && seq_delta == 1 && !venia_de_holdover) {
         const int64_t diff_candidato = (int64_t)ticks_window - 32768LL;
         diff_outlier = (diff_candidato > MAX_DIFF_TICKS) ||
@@ -354,7 +355,6 @@ void loop() {
 
     if (!sincronizado_antes) {
         // Primer PPS con UTC validada: es el ORIGEN, NO una medicion.
-        // Solo se calculan offset/Kalman a partir del intervalo siguiente.
         if (rtc_sincronizado_utc) {
             offset_ticks = 0;
             kalman.reset();
@@ -381,13 +381,10 @@ void loop() {
         return;
     }
 
-    /*
-        Si veníamos de holdover, esta primera muestra se usa
-        solamente para reenganchar la referencia.
-        No se usa para actualizar offset ni Kalman, porque el intervalo
-        entre el último PPS antes de la pérdida y este nuevo PPS no
-        representa una ventana normal de 1 segundo.
-    */
+    
+    //Si veníamos de holdover, esta primera muestra se usa
+    //solamente para reenganchar la referencia. No se usa para actualizar Kalman.
+
     if (interval_valid && !venia_de_holdover) {
         ticks = ticks_window / seq_delta;
         const int64_t expected_ticks =
@@ -433,10 +430,8 @@ void loop() {
         (elapsed_seconds_rounded > seq_delta)
             ? elapsed_seconds_rounded - seq_delta
             : 0;
-    // El numero de ISR PPS no equivale a segundos civiles si hubo una pausa.
+
     // Reconstruir solo los segundos respaldados por micros() Y el RTC 32 kHz.
-    // Si no coinciden, el comparador suspende sus tres horas hasta reanclar
-    // tres muestras consecutivas, SIN reiniciar RTC ni Kalman.
     threeClocks.observePpsInterval(
         venia_de_holdover, elapsed_us, seq_delta, pending, ticks_window);
     const bool offset_medido_disponible =

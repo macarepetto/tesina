@@ -39,6 +39,26 @@ void snapshotLastPps(uint32_t& seq, uint32_t& pps_time_us);
 // Se usa solamente para informar las horas estimadas durante holdover.
 bool snapshotCurrentTicks(uint32_t& ticks_raw);
 
-}  // namespace RTC32K_Pcnt_Capture
+struct ExternalEventSample {
+
+    // Instante medido por el ESP32.
+    uint32_t event_micros = 0;
+
+    // Contador acumulado del RTC de 32 kHz.
+    uint32_t ticks_raw = 0;
+
+    // Ultima referencia PPS conocida.
+    uint32_t last_pps_seq = 0;
+    uint32_t last_pps_micros = 0;
+    uint32_t last_pps_ticks_raw = 0;
+};
+
+// Se utiliza exclusivamente desde una interrupcion.
+// No reinicia ni modifica el contador PCNT.
+bool IRAM_ATTR captureExternalEventFromIsr(
+    ExternalEventSample& sample
+);
+
+}
 
 #endif

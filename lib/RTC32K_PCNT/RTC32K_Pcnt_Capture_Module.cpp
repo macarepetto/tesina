@@ -163,4 +163,59 @@ bool snapshotCurrentTicks(uint32_t& ticks_raw) {
     return true;
 }
 
-}  // namespace RTC32K_Pcnt_Capture
+// =====================================================
+// CAPTURA DEL CONTADOR RTC EN UN EVENTO EXTERNO
+// =====================================================
+
+bool IRAM_ATTR captureExternalEventFromIsr(
+    ExternalEventSample& sample
+) {
+    int16_t hw_count = 0;
+
+    portENTER_CRITICAL_ISR(&pcnt_mux);
+
+    // Capturar el instante del ESP32.
+    sample.event_micros = micros();
+
+    // Leer el contador PCNT sin reiniciarlo.
+    const esp_err_t result =
+        pcnt_get_counter_value(
+            PCNT_UNIT_USED,
+            &hw_count
+        );
+
+    sample.ticks_raw =
+        pcnt_base + (uint32_t)hw_count;
+
+    // Guardar la referencia PPS conocida al
+    // momento de producirse el evento.
+    sample.last_pps_seq = pps_seq;
+
+    sample.last_pps_micros =
+        pps_time_us_isr;
+
+    sample.last_pps_ticks_raw =
+        ticks_raw_isr;
+
+    portEXIT_CRITICAL_ISR(&pcnt_mux);
+
+    if (result != ESP_OK || hw_count < 0) {
+        return false;
+    }
+
+    // Descartar una captura incoherente si
+    // coincide con un limite del contador.
+    if (
+        sample.last_pps_seq != 0 &&
+        (int32_t)(
+            sample.ticks_raw -
+            sample.last_pps_ticks_raw
+        ) < 0
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+}
