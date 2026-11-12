@@ -1,4 +1,5 @@
 #include "Json_Log_Builder.h"
+#include "Tick_Capture.h"
 
 #include <stdio.h>
 
@@ -383,4 +384,89 @@ void buildPpsLogJson(
     e.rtc_gnss_fields = rtc_gnss_fields;
 
     buildLogJson(e, out, len);
+}
+
+bool buildPhysicalEventJson(
+    char* out,
+    size_t len,
+    const char* device_id,
+    const ButtonTickSample& event,
+    uint32_t dropped,
+    uint32_t now_ms,
+    uint32_t delay_to_log_us
+) {
+    if (out == nullptr || len == 0 || device_id == nullptr) {
+        return false;
+    }
+
+    // Campos que pueden ser numericos o null.
+    char event_ticks[24];
+    char delta_pps[24];
+    char delta_ticks[24];
+
+    // Ticks acumulados al producirse el evento.
+    jsonUInt32(
+        event_ticks,
+        sizeof(event_ticks),
+        event.captured,
+        static_cast<uint32_t>(event.event_ticks)
+    );
+
+    // Microsegundos desde el ultimo PPS.
+    jsonUInt32(
+        delta_pps,
+        sizeof(delta_pps),
+        event.has_pps,
+        event.event_us - event.last_pps.at_us
+    );
+
+    // Ticks transcurridos desde el ultimo PPS.
+    jsonInt64(
+        delta_ticks,
+        sizeof(delta_ticks),
+        event.captured && event.has_pps,
+        static_cast<int32_t>(
+            static_cast<uint32_t>(event.ticks_since_pps)
+        )
+    );
+
+    // Construir el JSON conservando los campos originales.
+    const int written = snprintf(
+        out,
+        len,
+        "{"
+        "\"id\":\"%s\","
+        "\"modo\":\"EVENTO_FISICO\","
+        "\"ms\":%lu,"
+        "\"evento_num\":%lu,"
+        "\"evento_esp_us\":%lu,"
+        "\"evento_ticks_raw\":%s,"
+        "\"evento_pps_seq\":%lu,"
+        "\"evento_pps_micros\":%lu,"
+        "\"evento_pps_ticks_raw\":%lu,"
+        "\"evento_delta_pps_us\":%s,"
+        "\"evento_delta_ticks\":%s,"
+        "\"evento_captura_ok\":%s,"
+        "\"evento_retardo_registro_us\":%lu,"
+        "\"evento_descartados\":%lu"
+        "}",
+
+        device_id,
+        (unsigned long)now_ms,
+        (unsigned long)event.number,
+        (unsigned long)event.event_us,
+        event_ticks,
+        (unsigned long)event.last_pps.seq,
+        (unsigned long)event.last_pps.at_us,
+        (unsigned long)static_cast<uint32_t>(event.last_pps.ticks),
+        delta_pps,
+        delta_ticks,
+        jsonBool(event.captured),
+        (unsigned long)delay_to_log_us,
+        (unsigned long)dropped
+    );
+
+    // Verificar que el JSON entre en el buffer.
+    return written >= 0 &&
+           static_cast<size_t>(written) < len;
 }

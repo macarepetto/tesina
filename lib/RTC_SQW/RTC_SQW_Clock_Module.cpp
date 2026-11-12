@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "RTC32K_Pcnt_Capture_Module.h"
+#include "Capture_Instances.h"
 #include "RTC_Module.h"
 #include "RTC_SQW_Time_Math.h"
 #include "Telemetry_Queue_Module.h"
@@ -26,14 +26,6 @@ struct SqwSample {
     bool capture_ok = false;
 };
 
-portMUX_TYPE sqw_mux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool sqw_pending = false;
-volatile uint32_t sqw_seq = 0;
-volatile uint32_t sqw_ticks_raw = 0;
-volatile uint32_t sqw_at_us = 0;
-volatile uint32_t sqw_discarded = 0;
-volatile bool sqw_capture_ok = false;
-
 bool started = false;
 uint32_t reject_through_seq = 0;
 uint32_t last_good_seq = 0;
@@ -44,43 +36,21 @@ bool anchor_valid = false;
 uint32_t anchor_ticks = 0;
 int64_t anchor_epoch_s = 0;
 
-void IRAM_ATTR onSqw() {
-    // Usa el MISMO PCNT del PPS; lectura atomica, sin resetear el contador.
-    RTC32K_Pcnt_Capture::ExternalEventSample capture;
-    const bool captured =
-        RTC32K_Pcnt_Capture::captureExternalEventFromIsr(capture);
-
-    portENTER_CRITICAL_ISR(&sqw_mux);
-    ++sqw_seq;
-    if (sqw_pending) ++sqw_discarded;
-    sqw_pending = true;
-    sqw_ticks_raw = capture.ticks_raw;
-    sqw_at_us = capture.event_micros;
-    sqw_capture_ok = captured;
-    portEXIT_CRITICAL_ISR(&sqw_mux);
-}
-
+// El capturador periódico común administra ISR y snapshots de SQW.
+// Se mantiene este adaptador para no modificar los cálculos del calendario.
 bool consumeSqw(SqwSample& sample) {
-    bool available = false;
-    portENTER_CRITICAL(&sqw_mux);
-    if (sqw_pending) {
-        sample.seq = sqw_seq;
-        sample.ticks_raw = sqw_ticks_raw;
-        sample.at_us = sqw_at_us;
-        sample.discarded = sqw_discarded;
-        sample.capture_ok = sqw_capture_ok;
-        sqw_pending = false;
-        available = true;
-    }
-    portEXIT_CRITICAL(&sqw_mux);
-    return available;
+    TickEdgeSample edge;
+    if (!CaptureInstances::sqw().consume(edge)) return false;
+    sample.seq = edge.seq;
+    sample.ticks_raw = static_cast<uint32_t>(edge.ticks);
+    sample.at_us = edge.at_us;
+    sample.discarded = edge.discarded;
+    sample.capture_ok = true;
+    return true;
 }
 
 uint32_t currentSqwSeq() {
-    portENTER_CRITICAL(&sqw_mux);
-    const uint32_t seq = sqw_seq;
-    portEXIT_CRITICAL(&sqw_mux);
-    return seq;
+    return CaptureInstances::sqw().sequence();
 }
 
 bool setDs3231Sqw1Hz() {
@@ -124,16 +94,12 @@ bool begin(int pin_rtc_sqw) {
     if (pin_rtc_sqw < 0) return false;
     if (!setDs3231Sqw1Hz()) return false;
 
-    portENTER_CRITICAL(&sqw_mux);
-    sqw_pending = false;
-    sqw_seq = 0;
-    sqw_discarded = 0;
-    portEXIT_CRITICAL(&sqw_mux);
-
     anchor_valid = false;
     last_good_seq = 0;
-    pinMode(pin_rtc_sqw, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(pin_rtc_sqw), onSqw, FALLING);
+    // Dos instancias de la misma clase: SQW usa FALLING; PPS usa RISING.
+    if (!CaptureInstances::sqw().begin(pin_rtc_sqw, FALLING, 0, INPUT_PULLUP)) {
+        return false;
+    }
     started = true;
     return true;
 }
@@ -301,4 +267,4 @@ void publishAtPps(const char* device_id, uint32_t pps_seq,
     telemetry.enqueue(json);
 }
 
-}  // namespace RTC_SQW_Clock
+}

@@ -2,7 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "RTC32K_Pcnt_Capture_Module.h"
+#include "PPS_Capture.h"
 
 namespace {
 constexpr uint32_t GNSS_VALID_LOG_MAX_AGE_MS = 3000;
@@ -18,7 +18,7 @@ void RTC_GNSS_Diagnostics_Module::observeRmcAfterPps() {
     last_rmc_revision_ = d.revision;
     uint32_t seq_snapshot = 0;
     uint32_t pps_us_snapshot = 0;
-    RTC32K_Pcnt_Capture::snapshotLastPps(seq_snapshot, pps_us_snapshot);
+    PPS_Capture::snapshotLastPps(seq_snapshot, pps_us_snapshot);
     last_rmc_pps_seq_ = seq_snapshot;
     const int32_t lag_us = (int32_t)(d.procesado_us - pps_us_snapshot);
     last_rmc_after_pps_us_ =

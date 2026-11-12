@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <string.h>
-#include "RTC32K_Pcnt_Capture_Module.h"
+#include "PPS_Capture.h"
 #include "Kalman_Filter.h"
 #include "GPS_Module.h"
 #include "RTC_Module.h"
@@ -194,7 +194,7 @@ void setup() {
 
     aging_aplicado = rtc.getAppliedAging();
     Serial.printf("Aging aplicado y verificado: %d\n", (int)aging_aplicado);
-    RTC32K_Pcnt_Capture::begin(PIN_32K_RTC, PIN_PPS_GPS);
+    PPS_Capture::begin(PIN_32K_RTC, PIN_PPS_GPS);
     if (!RTC_SQW_Clock::begin(PIN_SQW_RTC)) {
         Serial.println("ADVERTENCIA: RTC/SQW no disponible; reloj_rtc_calendario_sqw sera null");
     }
@@ -223,8 +223,8 @@ void loop() {
     static uint32_t last_holdover_predict_ms = 0;
     static uint32_t holdover_steps = 0;
     static bool en_holdover = false;
-    RTC32K_Pcnt_Capture::PpsSample muestra_pps;
-    const bool hay_muestra = RTC32K_Pcnt_Capture::consumePps(muestra_pps);
+    PPS_Capture::PpsSample muestra_pps;
+    const bool hay_muestra = PPS_Capture::consumePps(muestra_pps);
     const uint32_t ticks_raw = muestra_pps.ticks_raw;
     const uint32_t seq = muestra_pps.seq;
     const uint32_t pending = muestra_pps.pending;
@@ -266,7 +266,7 @@ void loop() {
             char rtc_gnss_fields[1024];
             uint32_t ticks_actuales = 0;
             const bool pcnt_ok =
-                RTC32K_Pcnt_Capture::snapshotCurrentTicks(ticks_actuales);
+                PPS_Capture::snapshotCurrentTicks(ticks_actuales);
             buildRtcGnssJsonFields(
                 rtc_gnss_fields, sizeof(rtc_gnss_fields),
                 false, 0, ticks_actuales,

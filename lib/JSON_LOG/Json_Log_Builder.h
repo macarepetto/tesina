@@ -154,4 +154,16 @@ void buildPpsLogJson(
     const char* rtc_gnss_fields
 );
 
+struct ButtonTickSample;
+
+bool buildPhysicalEventJson(
+    char* out,
+    size_t len,
+    const char* device_id,
+    const ButtonTickSample& event,
+    uint32_t dropped,
+    uint32_t now_ms,
+    uint32_t delay_to_log_us
+);
+
 #endif
