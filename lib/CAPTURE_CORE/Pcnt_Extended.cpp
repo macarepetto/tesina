@@ -29,6 +29,8 @@ void IRAM_ATTR PcntExtended::overflowIsr(void* arg) {
     portEXIT_CRITICAL_ISR(&self->mux_);
 }
 
+/// 
+/// VER DE CAMBIAR LA FORMA DE PASAR EL CANAL (NO HARDCODEAR)
 bool PcntExtended::begin(int pulse_gpio) {
     if (started_) return true;
     pinMode(pulse_gpio, INPUT_PULLUP);
