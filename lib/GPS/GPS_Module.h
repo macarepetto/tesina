@@ -39,6 +39,16 @@ struct UbxUtcDiagnostics {
     uint32_t recibido_ms = 0;
 };
 
+// Resultado de una fuente GNSS real (RMC, corroborada con UBX).
+// El nombre "local" conserva la convencion UTC-3 del RTC existente.
+// El receptor entrega la etiqueta temporal; CLOCK_GNSS la asocia al PPS.
+struct GpsUtcSample {
+    int64_t local_epoch_s = 0;
+    uint32_t rmc_inicio_us = 0;
+    uint32_t rmc_fin_us = 0;
+    uint32_t rmc_revision = 0;
+};
+
 class GPS_Module {
 public:
     GPS_Module(HardwareSerial& serial, int rxPin, int txPin, int ppsPin, long baud = 9600);
@@ -53,6 +63,12 @@ public:
     // Requiere conexion fisica ESP32 TX -> RX del modulo GNSS.
     void consultarUbxUtcSiCorresponde();
     UbxUtcDiagnostics getUbxUtcDiagnostics() const;
+
+    // Validacion que antes hacia utcListaParaInicializar() en main.
+    // No afirma, por si sola, que la RMC corresponde a un PPS particular.
+    bool getValidatedUtcSample(GpsUtcSample& out,
+                               uint32_t ubx_max_age_ms = 3000,
+                               uint32_t rmc_max_age_ms = 1500) const;
 
     // RMC válida
     bool hasValidRmcRecent(unsigned long maxAgeMs) const;
@@ -106,6 +122,8 @@ private:
     RmcData _lastValidRmc;
     bool _haveLastValidRmc = false;
     unsigned long _lastValidRmcMs = 0;
+    uint32_t _nmeaInicioUs = 0;
+    uint32_t _lastValidRmcInicioUs = 0;
     RmcDiagnostics _rmcDiag;
     UbxUtcDiagnostics _ubxUtc;
 

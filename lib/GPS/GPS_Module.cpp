@@ -20,6 +20,7 @@ void GPS_Module::update() {
             closeSentenceIfNeeded();
             _inSentence = true;
             _nmeaLine = "$";
+            _nmeaInicioUs = micros();
             continue;
         }
 
@@ -256,18 +257,7 @@ void GPS_Module::processSentence(const String& line) {
             _lastValidRmc = r;
             _haveLastValidRmc = true;
             _lastValidRmcMs = ahoraMs;
-
-        // // Base GNSS@PPS: guardo DateTime local y snapshot consistente del contador PPS
-        // DateTime loc(2000,1,1,0,0,0);
-        // if (rmcToLocalDateTimeUTCminus3(r, loc)) {
-        //     _lastRmcLocal = loc;
-        //     _haveLastRmcLocal = true;
-
-        //     noInterrupts();
-        //     unsigned long snap = _ppsPulses;
-        //     interrupts();
-        //     _ppsCountAtLastRmc = snap;
-        // }
+            _lastValidRmcInicioUs = _nmeaInicioUs;
         } // RMC con checksum y fecha validos
     }
 
@@ -350,6 +340,33 @@ bool GPS_Module::rmcToLocalDateTimeUTCminus3(const RmcData& r, DateTime& outLoca
 
     t -= 3UL * 3600UL;
     outLocal = DateTime(t);
+    return true;
+}
+
+bool GPS_Module::getValidatedUtcSample(GpsUtcSample& out,
+                                         uint32_t ubx_max_age_ms,
+                                         uint32_t rmc_max_age_ms) const {
+    // Validaciones originales del main, sin depender de PPS/CAPTURE_CORE.
+    const UbxUtcDiagnostics& u = _ubxUtc;
+    if (!u.recibido || !u.fecha_razonable ||
+        (u.flags & 0x07) != 0x07 ||
+        uint32_t(millis() - u.recibido_ms) > ubx_max_age_ms ||
+        !hasValidRmcRecent(rmc_max_age_ms)) return false;
+
+    DateTime rmc_local(2000, 1, 1, 0, 0, 0);
+    if (!getLastValidLocalDateTime(rmc_local)) return false;
+
+    const DateTime ubx_utc(u.year, u.month, u.day,
+                           u.hour, u.minute, u.second);
+    const int64_t diferencia_s =
+        ((int64_t)rmc_local.unixtime() + 3LL * 3600LL) -
+        (int64_t)ubx_utc.unixtime();
+    if (diferencia_s != 0 && diferencia_s != 1) return false;
+
+    out.local_epoch_s = (int64_t)rmc_local.unixtime();
+    out.rmc_inicio_us = _lastValidRmcInicioUs;
+    out.rmc_fin_us = _rmcDiag.procesado_us;
+    out.rmc_revision = _rmcDiag.revision;
     return true;
 }
 

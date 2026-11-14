@@ -26,6 +26,10 @@ bool RTC_Module::begin() {
     return true;
 }
 
+void RTC_Module::enableSqw1Hz() {
+    _rtc.writeSqwPinMode(DS3231_SquareWave1Hz);
+}
+
 void RTC_Module::adjustToCompileTime() {
     DateTime t(__DATE__, __TIME__);
     _rtc.adjust(t);

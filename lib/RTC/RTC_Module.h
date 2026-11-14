@@ -12,6 +12,8 @@ public:
     RTC_Module(int sdaPin = -1, int sclPin = -1, int sqwPin = -1);
 
     bool begin();
+    // Configura la salida del RTC; la ISR de GPIO la instala CAPTURE_CORE.
+    void enableSqw1Hz();
 
     void adjustToCompileTime();
     void adjust(const DateTime& dt);
