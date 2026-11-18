@@ -1,169 +1,78 @@
-#ifndef JSON_LOG_BUILDER_H
-#define JSON_LOG_BUILDER_H
+#pragma once
 
-#include <Arduino.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "Tick_Capture.h"
 #include "Kalman_Filter.h"
 
-struct LogEvent {
-    const char* id = "";
-    int aging = 0;
-    uint32_t ms = 0;
-    const char* modo = "";
-    bool first = false;
+// Un unico formato de registro para PPS, HOLDOVER y EVENTO_FISICO.
+// No lee hardware, no ejecuta Kalman y no envia datos al servidor.
+enum class JsonLogType : uint8_t {
+    PPS,
+    HOLDOVER,
+    EVENTO_FISICO
+};
 
-    uint32_t pps_seq = 0;
-    uint32_t pps_pending = 0;
-    bool has_pps_period_us = false;
-    uint32_t pps_period_us = 0;
+// Las tres horas corresponden a los mismos ticks de PCNT.
+// Son microsegundos en la escala LOCAL UTC-3 que utilizan los CLOCKS actuales.
+struct ClockLogSnapshot {
+    bool has_ticks = false;
+    uint64_t ticks = 0;
+
+    bool gnss_ok = false;
+    int64_t gnss_us = 0;
+    bool rtc_ok = false;
+    int64_t rtc_us = 0;
+    bool kalman_ok = false;
+    int64_t kalman_us = 0;
+};
+
+struct JsonLogRecord {
+    const char* id = nullptr;                     // Obligatorio: identifica el prototipo.
+    JsonLogType tipo = JsonLogType::PPS;
+    const char* detalle = nullptr;                // Opcional: "ESPERANDO_UTC", "REENGANCHE"...
+    uint32_t ms = 0;                             // millis() en el momento de registrar.
+    int aging = 0;
+    bool rtc_aligned = false;
+    bool kalman_trained = false;
+
+    ClockLogSnapshot clocks;
+
+    // PPS: siempre copiar la muestra que devolvio pps.consume(edge).
+    bool has_pps = false;
+    TickEdgeSample pps;
+    bool interval_valid = false;                 // Decidido por el main, NO por el builder.
+
+    // Offset ACUMULADO de los periodos PPS, distinto del offset horario RTC-GNSS.
+    bool has_offset_ticks = false;
+    int64_t offset_ticks = 0;
+
+    bool kalman_prediccion = false;
+    bool kalman_actualizado = false;
+    bool has_kalman = false;
+    Kalman_State kalman;
+
     uint32_t ms_since_last_pps = 0;
     uint32_t holdover_steps = 0;
 
-    bool offset_medido_disponible = false;
-    bool kalman_prediccion = false;
-    bool kalman_actualizado = false;
+    // Datos disponibles en GPS_Module. Un valor negativo equivale a dato no disponible.
+    int gps_sats = -1;
+    double gps_pdop = -1.0;
+    double gps_hdop = -1.0;
+    bool has_utc_validation = false;
+    bool utc_valid = false;
 
-    bool has_ticks = false;
-    uint32_t ticks = 0;
-    bool has_ticks_window = false;
-    uint32_t ticks_window = 0;
-    bool has_ticks_raw = false;
-    uint32_t ticks_raw = 0;
-    bool has_seq_delta = false;
-    uint32_t seq_delta = 0;
-    bool has_elapsed_us = false;
-    uint32_t elapsed_us = 0;
-
-    bool interval_valid = false;
-    bool diff_outlier = false;
-    uint32_t missed_pps = 0;
-
-    bool has_diff = false;
-    int64_t diff = 0;
-
-    bool has_offset = false;
-    int64_t offset_ticks = 0;
-    double offset_us = 0.0;
-
-    const char* kalman_medicion = "none";
-
-    bool has_kalman_z_phi = false;
-    double kalman_z_phi = 0.0;
-
-    bool has_kalman = false;
-    double kalman_phi = 0.0;
-    double kalman_phi_us = 0.0;
-    double kalman_f = 0.0;
-    double kalman_p00 = 0.0;
-    double kalman_p01 = 0.0;
-    double kalman_p10 = 0.0;
-    double kalman_p11 = 0.0;
-    double kalman_y_phi = 0.0;
-    double kalman_k_phi = 0.0;
-    double kalman_k_f = 0.0;
-
-    bool has_residual = false;
-    double residual_us = 0.0;
-
-    // Campos ya armados por buildRtcGnssJsonFields().
-    // Deben venir con coma inicial, por ejemplo:
-    // ,"gnss_valido":true,"rtc_hora":"...","gnss_hora":"..."
-    const char* rtc_gnss_fields = "";
+    // Evento fisico: captura a implementar, SIN depender del viejo ButtonTickSample.
+    // El campo clocks.ticks debe contener los ticks capturados en el evento.
+    bool event_captured = false;
+    uint32_t event_num = 0;
+    uint32_t event_us = 0;                      // micros() de la ISR (se reinicia al desbordar).
+    uint32_t event_delay_to_log_us = 0;
+    uint32_t event_discarded = 0;
 };
 
-// Función genérica: serializa un LogEvent ya cargado.
-void buildLogJson(const LogEvent& event, char* out, size_t len);
-
-// Funciones de alto nivel: el main no debería cargar campo por campo.
-void buildHoldoverLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq_prev,
-    uint32_t ms_since_last_pps,
-    uint32_t holdover_steps,
-    int64_t offset_ticks,
-    double tick_us,
-    const Kalman_State& kalman_state,
-    const char* rtc_gnss_fields
-);
-
-void buildInitialPpsLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    uint32_t ticks_raw,
-    const char* rtc_gnss_fields
-);
-
-// PPS detectado antes de poder iniciar las estadísticas con UTC validada.
-// Los campos de offset y Kalman se publican como null.
-void buildPpsPreUtcLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    uint32_t ticks_raw,
-    uint32_t ticks_window,
-    uint32_t seq_delta,
-    uint32_t elapsed_us,
-    bool interval_valid,
-    bool diff_outlier,
-    bool primer_pps_utc,
-    const char* rtc_gnss_fields
-);
-
-void buildPpsLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    const char* modo,
-    uint32_t holdover_steps,
-    bool offset_medido_disponible,
-    bool kalman_prediccion,
-    bool kalman_actualizado,
-    uint32_t ticks,
-    uint32_t ticks_window,
-    uint32_t ticks_raw,
-    uint32_t seq_delta,
-    uint32_t elapsed_us,
-    bool interval_valid,
-    bool diff_outlier,
-    uint32_t missed_pps,
-    int64_t diff,
-    int64_t offset_ticks,
-    double tick_us,
-    const Kalman_State& kalman_state,
-    const char* rtc_gnss_fields
-);
-
-struct ButtonTickSample;
-
-bool buildPhysicalEventJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    const ButtonTickSample& event,
-    uint32_t dropped,
-    uint32_t now_ms,
-    uint32_t delay_to_log_us
-);
-
-#endif
+// Devuelve false si no hay id, el buffer es insuficiente o falla el formato.
+// En ese caso, deja out como cadena vacia: NUNCA enviar JSON truncado.
+// Compatible con Telemetry_Queue_Module::JSON_CAPACITY (1800 bytes).
+bool buildLogJson(const JsonLogRecord& record, char* out, size_t len);

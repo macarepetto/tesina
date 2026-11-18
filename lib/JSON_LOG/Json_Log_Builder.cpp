@@ -1,472 +1,276 @@
 #include "Json_Log_Builder.h"
-#include "Tick_Capture.h"
 
+#include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 
-static const char* jsonBool(bool value) {
-    return value ? "true" : "false";
+namespace {
+
+constexpr double TICK_US = 1000000.0 / 32768.0;
+
+const char* typeName(JsonLogType type) {
+    switch (type) {
+        case JsonLogType::PPS:           return "PPS";
+        case JsonLogType::HOLDOVER:      return "HOLDOVER";
+        case JsonLogType::EVENTO_FISICO: return "EVENTO_FISICO";
+    }
+    return "DESCONOCIDO";
 }
 
-static void jsonUInt32(char* out, size_t len, bool valid, uint32_t value) {
-    if (!valid) {
-        snprintf(out, len, "null");
+// Escritura incremental sobre un char[] fijo, sin String ni memoria dinamica.
+// Escapa correctamente los valores de texto y verifica cada escritura.
+class JsonWriter {
+public:
+    JsonWriter(char* output, size_t capacity)
+        : out_(output), capacity_(capacity) {
+        if (out_ == nullptr || capacity_ < 3) {
+            ok_ = false;
+            return;
+        }
+        out_[0] = '\0';
+        appendChar('{');
+    }
+
+    void string(const char* key, const char* value) {
+        field(key);
+        if (value) quoted(value);
+        else raw("null");
+    }
+
+    void boolean(const char* key, bool value) {
+        field(key);
+        raw(value ? "true" : "false");
+    }
+
+    void nullValue(const char* key) {
+        field(key);
+        raw("null");
+    }
+
+    void signedNumber(const char* key, int64_t value) {
+        field(key);
+        formatted("%lld", static_cast<long long>(value));
+    }
+
+    void unsignedNumber(const char* key, uint64_t value) {
+        field(key);
+        formatted("%llu", static_cast<unsigned long long>(value));
+    }
+
+    void decimal(const char* key, double value, int decimals = 6) {
+        field(key);
+        if (!isfinite(value)) raw("null");
+        else formatted("%.*f", decimals, value);
+    }
+
+    bool finish() {
+        appendChar('}');
+        if (!ok_ && out_ != nullptr && capacity_ != 0) out_[0] = '\0';
+        return ok_;
+    }
+
+private:
+    char* out_ = nullptr;
+    size_t capacity_ = 0;
+    size_t used_ = 0;
+    bool ok_ = true;
+    bool first_ = true;
+
+    void appendChar(char c) {
+        if (!ok_) return;
+        if (used_ + 1 >= capacity_) {
+            ok_ = false;
+            return;
+        }
+        out_[used_++] = c;
+        out_[used_] = '\0';
+    }
+
+    void raw(const char* value) {
+        if (!ok_ || !value) return;
+        while (*value && ok_) appendChar(*value++);
+    }
+
+    void formatted(const char* fmt, ...) {
+        if (!ok_) return;
+        va_list args;
+        va_start(args, fmt);
+        const int n = vsnprintf(out_ + used_, capacity_ - used_, fmt, args);
+        va_end(args);
+        if (n < 0 || static_cast<size_t>(n) >= capacity_ - used_) {
+            ok_ = false;
+            return;
+        }
+        used_ += static_cast<size_t>(n);
+    }
+
+    void quoted(const char* value) {
+        if (!value) { raw("null"); return; }
+        appendChar('"');
+        for (const unsigned char* p = reinterpret_cast<const unsigned char*>(value);
+             *p && ok_; ++p) {
+            switch (*p) {
+                case '"': raw("\\\""); break;
+                case '\\': raw("\\\\"); break;
+                case '\n': raw("\\n"); break;
+                case '\r': raw("\\r"); break;
+                case '\t': raw("\\t"); break;
+                default:
+                    if (*p < 0x20) formatted("\\u%04x", static_cast<unsigned>(*p));
+                    else appendChar(static_cast<char>(*p));
+                    break;
+            }
+        }
+        appendChar('"');
+    }
+
+    void field(const char* key) {
+        if (!ok_) return;
+        if (!first_) appendChar(',');
+        first_ = false;
+        quoted(key);
+        appendChar(':');
+    }
+};
+
+void addClockFields(JsonWriter& w, const ClockLogSnapshot& c) {
+    if (c.has_ticks) w.unsignedNumber("sample_ticks", c.ticks);
+    else w.nullValue("sample_ticks");
+
+    if (c.gnss_ok) w.signedNumber("gnss_us", c.gnss_us);
+    else w.nullValue("gnss_us");
+    if (c.rtc_ok) w.signedNumber("rtc_us", c.rtc_us);
+    else w.nullValue("rtc_us");
+    if (c.kalman_ok) w.signedNumber("kalman_us", c.kalman_us);
+    else w.nullValue("kalman_us");
+
+    if (c.gnss_ok && c.rtc_ok)
+        w.signedNumber("offset_rtc_gnss_us", c.rtc_us - c.gnss_us);
+    else w.nullValue("offset_rtc_gnss_us");
+
+    if (c.gnss_ok && c.kalman_ok)
+        w.signedNumber("offset_kalman_gnss_us", c.kalman_us - c.gnss_us);
+    else w.nullValue("offset_kalman_gnss_us");
+
+    if (c.rtc_ok && c.kalman_ok)
+        w.signedNumber("kalman_menos_rtc_us", c.kalman_us - c.rtc_us);
+    else w.nullValue("kalman_menos_rtc_us");
+}
+
+void addKalmanFields(JsonWriter& w, const JsonLogRecord& r) {
+    if (!r.has_kalman) {
+        w.nullValue("kalman_phi");
+        w.nullValue("kalman_f");
+        w.nullValue("kalman_p00");
+        w.nullValue("kalman_p01");
+        w.nullValue("kalman_p10");
+        w.nullValue("kalman_p11");
+        w.nullValue("kalman_y_phi");
+        w.nullValue("kalman_k_phi");
+        w.nullValue("kalman_k_f");
         return;
     }
-    snprintf(out, len, "%lu", (unsigned long)value);
-}
 
-static void jsonInt64(char* out, size_t len, bool valid, int64_t value) {
-    if (!valid) {
-        snprintf(out, len, "null");
-        return;
-    }
-    snprintf(out, len, "%lld", (long long)value);
-}
+    w.decimal("kalman_phi", r.kalman.phi);
+    w.decimal("kalman_f", r.kalman.f, 9);
+    w.decimal("kalman_p00", r.kalman.p00);
+    w.decimal("kalman_p01", r.kalman.p01);
+    w.decimal("kalman_p10", r.kalman.p10);
+    w.decimal("kalman_p11", r.kalman.p11);
 
-static void jsonDouble(char* out, size_t len, bool valid, double value, int decimals) {
-    if (!valid) {
-        snprintf(out, len, "null");
-        return;
-    }
-
-    switch (decimals) {
-        case 3:
-            snprintf(out, len, "%.3f", value);
-            break;
-        case 6:
-            snprintf(out, len, "%.6f", value);
-            break;
-        default:
-            snprintf(out, len, "%f", value);
-            break;
+    // Innovacion y ganancias son las del update, no las de un predict aislado.
+    if (r.kalman_actualizado) {
+        w.decimal("kalman_y_phi", r.kalman.y0);
+        w.decimal("kalman_k_phi", r.kalman.k00);
+        w.decimal("kalman_k_f", r.kalman.k10);
+    } else {
+        w.nullValue("kalman_y_phi");
+        w.nullValue("kalman_k_phi");
+        w.nullValue("kalman_k_f");
     }
 }
 
-static void fillKalmanFields(LogEvent& e, const Kalman_State& state, double tick_us) {
-    e.has_kalman = true;
-    e.kalman_phi = state.phi;
-    e.kalman_phi_us = state.phi * tick_us;
-    e.kalman_f = state.f;
-    e.kalman_p00 = state.p00;
-    e.kalman_p01 = state.p01;
-    e.kalman_p10 = state.p10;
-    e.kalman_p11 = state.p11;
-    e.kalman_y_phi = state.y0;
-    e.kalman_k_phi = state.k00;
-    e.kalman_k_f = state.k10;
-}
+}  // namespace
 
-void buildLogJson(const LogEvent& e, char* out, size_t len) {
-    char pps_period_json[24];
-    char ticks_json[24];
-    char ticks_window_json[24];
-    char ticks_raw_json[24];
-    char seq_delta_json[24];
-    char elapsed_us_json[24];
-    char diff_json[32];
-    char offset_ticks_json[32];
-    char offset_us_json[32];
-    char kalman_z_phi_json[32];
-    char kalman_phi_json[32];
-    char kalman_phi_us_json[32];
-    char kalman_f_json[32];
-    char kalman_p00_json[32];
-    char kalman_p01_json[32];
-    char kalman_p10_json[32];
-    char kalman_p11_json[32];
-    char kalman_y_phi_json[32];
-    char kalman_k_phi_json[32];
-    char kalman_k_f_json[32];
-    char residual_us_json[32];
+bool buildLogJson(const JsonLogRecord& r, char* out, size_t len) {
+    if (!out || len == 0) return false;
+    out[0] = '\0';
+    if (len < 3) return false;
+    if (!r.id || !r.id[0]) return false;
 
-    jsonUInt32(pps_period_json, sizeof(pps_period_json), e.has_pps_period_us, e.pps_period_us);
-    jsonUInt32(ticks_json, sizeof(ticks_json), e.has_ticks, e.ticks);
-    jsonUInt32(ticks_window_json, sizeof(ticks_window_json), e.has_ticks_window, e.ticks_window);
-    jsonUInt32(ticks_raw_json, sizeof(ticks_raw_json), e.has_ticks_raw, e.ticks_raw);
-    jsonUInt32(seq_delta_json, sizeof(seq_delta_json), e.has_seq_delta, e.seq_delta);
-    jsonUInt32(elapsed_us_json, sizeof(elapsed_us_json), e.has_elapsed_us, e.elapsed_us);
-    jsonInt64(diff_json, sizeof(diff_json), e.has_diff, e.diff);
-    jsonInt64(offset_ticks_json, sizeof(offset_ticks_json), e.has_offset, e.offset_ticks);
-    jsonDouble(offset_us_json, sizeof(offset_us_json), e.has_offset, e.offset_us, 3);
-    jsonDouble(kalman_z_phi_json, sizeof(kalman_z_phi_json), e.has_kalman_z_phi, e.kalman_z_phi, 6);
-    jsonDouble(kalman_phi_json, sizeof(kalman_phi_json), e.has_kalman, e.kalman_phi, 6);
-    jsonDouble(kalman_phi_us_json, sizeof(kalman_phi_us_json), e.has_kalman, e.kalman_phi_us, 3);
-    jsonDouble(kalman_f_json, sizeof(kalman_f_json), e.has_kalman, e.kalman_f, 6);
-    jsonDouble(kalman_p00_json, sizeof(kalman_p00_json), e.has_kalman, e.kalman_p00, 6);
-    jsonDouble(kalman_p01_json, sizeof(kalman_p01_json), e.has_kalman, e.kalman_p01, 6);
-    jsonDouble(kalman_p10_json, sizeof(kalman_p10_json), e.has_kalman, e.kalman_p10, 6);
-    jsonDouble(kalman_p11_json, sizeof(kalman_p11_json), e.has_kalman, e.kalman_p11, 6);
-    jsonDouble(kalman_y_phi_json, sizeof(kalman_y_phi_json), e.has_kalman, e.kalman_y_phi, 6);
-    jsonDouble(kalman_k_phi_json, sizeof(kalman_k_phi_json), e.has_kalman, e.kalman_k_phi, 6);
-    jsonDouble(kalman_k_f_json, sizeof(kalman_k_f_json), e.has_kalman, e.kalman_k_f, 6);
-    jsonDouble(residual_us_json, sizeof(residual_us_json), e.has_residual, e.residual_us, 3);
+    JsonWriter w(out, len);
+    w.unsignedNumber("schema", 2);
+    w.string("id", r.id);  // El servidor.py usa esta clave para separar prototipos.
+    w.string("modo", typeName(r.tipo));
+    if (r.detalle && r.detalle[0]) w.string("detalle", r.detalle);
+    w.unsignedNumber("ms", r.ms);
+    w.signedNumber("aging", r.aging);
+    w.boolean("rtc_aligned", r.rtc_aligned);
+    w.boolean("kalman_trained", r.kalman_trained);
+    w.string("escala_hora", "LOCAL_UTC-3");
 
-    snprintf(
-        out,
-        len,
-        "{\"id\":\"%s\"," 
-        "\"aging\":%d,"
-        "\"ms\":%lu,"
-        "\"modo\":\"%s\","
-        "\"first\":%s,"
-        "\"pps_seq\":%lu,"
-        "\"pps_pending\":%lu,"
-        "\"pps_period_us\":%s,"
-        "\"ms_since_last_pps\":%lu,"
-        "\"holdover_steps\":%lu,"
-        "\"offset_medido_disponible\":%s,"
-        "\"kalman_prediccion\":%s,"
-        "\"kalman_actualizado\":%s,"
-        "\"ticks\":%s,"
-        "\"ticks_window\":%s,"
-        "\"ticks_raw\":%s,"
-        "\"seq_delta\":%s,"
-        "\"elapsed_us\":%s,"
-        "\"interval_valid\":%s,"
-        "\"diff_outlier\":%s,"
-        "\"missed_pps\":%lu,"
-        "\"diff\":%s,"
-        "\"offset_ticks\":%s,"
-        "\"offset_us\":%s,"
-        "\"kalman_medicion\":\"%s\","
-        "\"kalman_z_phi\":%s,"
-        "\"kalman_phi\":%s,"
-        "\"kalman_phi_us\":%s,"
-        "\"kalman_f\":%s,"
-        "\"kalman_p00\":%s,"
-        "\"kalman_p01\":%s,"
-        "\"kalman_p10\":%s,"
-        "\"kalman_p11\":%s,"
-        "\"kalman_y_phi\":%s,"
-        "\"kalman_k_phi\":%s,"
-        "\"kalman_k_f\":%s,"
-        "\"residual_us\":%s%s}",
-        e.id,
-        e.aging,
-        (unsigned long)e.ms,
-        e.modo,
-        jsonBool(e.first),
-        (unsigned long)e.pps_seq,
-        (unsigned long)e.pps_pending,
-        pps_period_json,
-        (unsigned long)e.ms_since_last_pps,
-        (unsigned long)e.holdover_steps,
-        jsonBool(e.offset_medido_disponible),
-        jsonBool(e.kalman_prediccion),
-        jsonBool(e.kalman_actualizado),
-        ticks_json,
-        ticks_window_json,
-        ticks_raw_json,
-        seq_delta_json,
-        elapsed_us_json,
-        jsonBool(e.interval_valid),
-        jsonBool(e.diff_outlier),
-        (unsigned long)e.missed_pps,
-        diff_json,
-        offset_ticks_json,
-        offset_us_json,
-        e.kalman_medicion,
-        kalman_z_phi_json,
-        kalman_phi_json,
-        kalman_phi_us_json,
-        kalman_f_json,
-        kalman_p00_json,
-        kalman_p01_json,
-        kalman_p10_json,
-        kalman_p11_json,
-        kalman_y_phi_json,
-        kalman_k_phi_json,
-        kalman_k_f_json,
-        residual_us_json,
-        e.rtc_gnss_fields
-    );
-}
+    addClockFields(w, r.clocks);
 
-void buildHoldoverLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq_prev,
-    uint32_t ms_since_last_pps,
-    uint32_t holdover_steps,
-    int64_t offset_ticks,
-    double tick_us,
-    const Kalman_State& kalman_state,
-    const char* rtc_gnss_fields
-) {
-    LogEvent e;
-    e.id = device_id;
-    e.aging = aging;
-    e.ms = now_ms;
-    e.modo = "HOLDOVER";
-    e.first = false;
-    e.pps_seq = seq_prev;
-    e.pps_pending = 0;
-    e.ms_since_last_pps = ms_since_last_pps;
-    e.holdover_steps = holdover_steps;
-    e.offset_medido_disponible = false;
-    e.kalman_prediccion = true;
-    e.kalman_actualizado = false;
-    e.has_offset = true;
-    e.offset_ticks = offset_ticks;
-    e.offset_us = (double)offset_ticks * tick_us;
-    e.kalman_medicion = "none";
-    fillKalmanFields(e, kalman_state, tick_us);
-    e.has_residual = false;
-    e.rtc_gnss_fields = rtc_gnss_fields;
-
-    buildLogJson(e, out, len);
-}
-
-void buildInitialPpsLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    uint32_t ticks_raw,
-    const char* rtc_gnss_fields
-) {
-    LogEvent e;
-    e.id = device_id;
-    e.aging = aging;
-    e.ms = now_ms;
-    e.modo = "PPS_INICIAL";
-    e.first = true;
-    e.pps_seq = seq;
-    e.pps_pending = pending;
-    e.has_pps_period_us = true;
-    e.pps_period_us = pps_period_us;
-    e.offset_medido_disponible = false;
-    e.kalman_prediccion = false;
-    e.kalman_actualizado = false;
-    e.has_ticks_raw = true;
-    e.ticks_raw = ticks_raw;
-    e.kalman_medicion = "none";
-    e.rtc_gnss_fields = rtc_gnss_fields;
-
-    buildLogJson(e, out, len);
-}
-
-void buildPpsPreUtcLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    uint32_t ticks_raw,
-    uint32_t ticks_window,
-    uint32_t seq_delta,
-    uint32_t elapsed_us,
-    bool interval_valid,
-    bool diff_outlier,
-    bool primer_pps_utc,
-    const char* rtc_gnss_fields
-) {
-    const uint32_t elapsed_seconds_rounded =
-        (elapsed_us + 500000UL) / 1000000UL;
-
-    LogEvent e;
-    e.id = device_id;
-    e.aging = aging;
-    e.ms = now_ms;
-    e.modo = primer_pps_utc
-        ? "PPS_INICIO_UTC_SIN_MEDICION"
-        : "PPS_ESPERANDO_UTC";
-    e.first = false;
-    e.pps_seq = seq;
-    e.pps_pending = pending;
-    e.has_pps_period_us = true;
-    e.pps_period_us = pps_period_us;
-    e.has_ticks_raw = true;
-    e.ticks_raw = ticks_raw;
-    e.has_ticks_window = true;
-    e.ticks_window = ticks_window;
-    e.has_seq_delta = true;
-    e.seq_delta = seq_delta;
-    e.has_elapsed_us = true;
-    e.elapsed_us = elapsed_us;
-    e.interval_valid = interval_valid;
-    e.diff_outlier = diff_outlier;
-    e.missed_pps = elapsed_seconds_rounded > seq_delta
-        ? elapsed_seconds_rounded - seq_delta
-        : 0;
-    // Sin mediciones de offset ni de Kalman antes del comienzo experimental.
-    // Los valores por defecto de LogEvent producen null y flags false.
-    e.rtc_gnss_fields = rtc_gnss_fields;
-
-    buildLogJson(e, out, len);
-}
-
-void buildPpsLogJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    int aging,
-    uint32_t now_ms,
-    uint32_t seq,
-    uint32_t pending,
-    uint32_t pps_period_us,
-    const char* modo,
-    uint32_t holdover_steps,
-    bool offset_medido_disponible,
-    bool kalman_prediccion,
-    bool kalman_actualizado,
-    uint32_t ticks,
-    uint32_t ticks_window,
-    uint32_t ticks_raw,
-    uint32_t seq_delta,
-    uint32_t elapsed_us,
-    bool interval_valid,
-    bool diff_outlier,
-    uint32_t missed_pps,
-    int64_t diff,
-    int64_t offset_ticks,
-    double tick_us,
-    const Kalman_State& kalman_state,
-    const char* rtc_gnss_fields
-) {
-    const double offset_us = (double)offset_ticks * tick_us;
-    const double kalman_phi_us = kalman_state.phi * tick_us;
-
-    LogEvent e;
-    e.id = device_id;
-    e.aging = aging;
-    e.ms = now_ms;
-    e.modo = modo;
-    e.first = false;
-    e.pps_seq = seq;
-    e.pps_pending = pending;
-    e.has_pps_period_us = true;
-    e.pps_period_us = pps_period_us;
-    e.ms_since_last_pps = 0;
-    e.holdover_steps = holdover_steps;
-    e.offset_medido_disponible = offset_medido_disponible;
-    e.kalman_prediccion = kalman_prediccion;
-    e.kalman_actualizado = kalman_actualizado;
-
-    e.has_ticks = offset_medido_disponible;
-    e.ticks = ticks;
-    e.has_ticks_window = true;
-    e.ticks_window = ticks_window;
-    e.has_ticks_raw = true;
-    e.ticks_raw = ticks_raw;
-    e.has_seq_delta = true;
-    e.seq_delta = seq_delta;
-    e.has_elapsed_us = true;
-    e.elapsed_us = elapsed_us;
-
-    e.interval_valid = interval_valid;
-    e.diff_outlier = diff_outlier;
-    e.missed_pps = missed_pps;
-    e.has_diff = offset_medido_disponible;
-    e.diff = diff;
-
-    e.has_offset = true;
-    e.offset_ticks = offset_ticks;
-    e.offset_us = offset_us;
-
-    e.kalman_medicion = kalman_actualizado ? "phi" : "none";
-    e.has_kalman_z_phi = kalman_actualizado;
-    e.kalman_z_phi = (double)offset_ticks;
-    fillKalmanFields(e, kalman_state, tick_us);
-
-    e.has_residual = offset_medido_disponible;
-    e.residual_us = offset_us - kalman_phi_us;
-    e.rtc_gnss_fields = rtc_gnss_fields;
-
-    buildLogJson(e, out, len);
-}
-
-bool buildPhysicalEventJson(
-    char* out,
-    size_t len,
-    const char* device_id,
-    const ButtonTickSample& event,
-    uint32_t dropped,
-    uint32_t now_ms,
-    uint32_t delay_to_log_us
-) {
-    if (out == nullptr || len == 0 || device_id == nullptr) {
-        return false;
+    if (r.tipo == JsonLogType::PPS) {
+        if (r.has_pps) {
+            w.boolean("pps_valid", r.pps.valid);
+            w.unsignedNumber("pps_seq", r.pps.seq);
+            w.unsignedNumber("pps_pending", r.pps.pending);
+            w.unsignedNumber("pps_discarded", r.pps.discarded);
+            w.unsignedNumber("pps_at_us", r.pps.at_us);
+            w.unsignedNumber("pps_ticks", r.pps.ticks); // 64 bits; no truncar.
+            w.unsignedNumber("pps_diff_ticks", r.pps.diff);
+            w.unsignedNumber("pps_period_us", r.pps.period_us);
+            if (r.pps.period_us > 0)
+                w.signedNumber("pps_error_ticks", int64_t(r.pps.diff) - 32768LL);
+            else w.nullValue("pps_error_ticks");
+        } else {
+            w.nullValue("pps_valid");
+            w.nullValue("pps_seq");
+            w.nullValue("pps_pending");
+            w.nullValue("pps_discarded");
+            w.nullValue("pps_at_us");
+            w.nullValue("pps_ticks");
+            w.nullValue("pps_diff_ticks");
+            w.nullValue("pps_period_us");
+            w.nullValue("pps_error_ticks");
+        }
+        w.boolean("interval_valid", r.interval_valid);
     }
 
-    // Campos que pueden ser numericos o null.
-    char event_ticks[24];
-    char delta_pps[24];
-    char delta_ticks[24];
+    w.boolean("kalman_prediccion", r.kalman_prediccion);
+    w.boolean("kalman_actualizado", r.kalman_actualizado);
+    if (r.has_offset_ticks) {
+        w.signedNumber("offset_ticks", r.offset_ticks);
+        w.decimal("offset_us", r.offset_ticks * TICK_US, 3);
+    } else {
+        w.nullValue("offset_ticks");
+        w.nullValue("offset_us");
+    }
+    addKalmanFields(w, r);
 
-    // Ticks acumulados al producirse el evento.
-    jsonUInt32(
-        event_ticks,
-        sizeof(event_ticks),
-        event.captured,
-        static_cast<uint32_t>(event.event_ticks)
-    );
+    if (r.tipo == JsonLogType::HOLDOVER || r.tipo == JsonLogType::EVENTO_FISICO) {
+        w.unsignedNumber("ms_since_last_pps", r.ms_since_last_pps);
+    }
+    if (r.tipo == JsonLogType::HOLDOVER) {
+        w.unsignedNumber("holdover_steps", r.holdover_steps);
+    }
+    if (r.tipo == JsonLogType::EVENTO_FISICO) {
+        w.unsignedNumber("evento_num", r.event_num);
+        w.boolean("evento_captura_ok", r.event_captured);
+        w.unsignedNumber("evento_esp_us", r.event_us);
+        w.unsignedNumber("evento_retardo_registro_us", r.event_delay_to_log_us);
+        w.unsignedNumber("evento_descartados", r.event_discarded);
+    }
 
-    // Microsegundos desde el ultimo PPS.
-    jsonUInt32(
-        delta_pps,
-        sizeof(delta_pps),
-        event.has_pps,
-        event.event_us - event.last_pps.at_us
-    );
+    if (r.gps_sats >= 0) w.signedNumber("satelites", r.gps_sats);
+    else w.nullValue("satelites");
+    if (r.gps_pdop >= 0) w.decimal("pdop", r.gps_pdop, 3);
+    else w.nullValue("pdop");
+    if (r.gps_hdop >= 0) w.decimal("hdop", r.gps_hdop, 3);
+    else w.nullValue("hdop");
+    if (r.has_utc_validation) w.boolean("utc_validada", r.utc_valid);
+    else w.nullValue("utc_validada");
 
-    // Ticks transcurridos desde el ultimo PPS.
-    jsonInt64(
-        delta_ticks,
-        sizeof(delta_ticks),
-        event.captured && event.has_pps,
-        static_cast<int32_t>(
-            static_cast<uint32_t>(event.ticks_since_pps)
-        )
-    );
-
-    // Construir el JSON conservando los campos originales.
-    const int written = snprintf(
-        out,
-        len,
-        "{"
-        "\"id\":\"%s\","
-        "\"modo\":\"EVENTO_FISICO\","
-        "\"ms\":%lu,"
-        "\"evento_num\":%lu,"
-        "\"evento_esp_us\":%lu,"
-        "\"evento_ticks_raw\":%s,"
-        "\"evento_pps_seq\":%lu,"
-        "\"evento_pps_micros\":%lu,"
-        "\"evento_pps_ticks_raw\":%lu,"
-        "\"evento_delta_pps_us\":%s,"
-        "\"evento_delta_ticks\":%s,"
-        "\"evento_captura_ok\":%s,"
-        "\"evento_retardo_registro_us\":%lu,"
-        "\"evento_descartados\":%lu"
-        "}",
-
-        device_id,
-        (unsigned long)now_ms,
-        (unsigned long)event.number,
-        (unsigned long)event.event_us,
-        event_ticks,
-        (unsigned long)event.last_pps.seq,
-        (unsigned long)event.last_pps.at_us,
-        (unsigned long)static_cast<uint32_t>(event.last_pps.ticks),
-        delta_pps,
-        delta_ticks,
-        jsonBool(event.captured),
-        (unsigned long)delay_to_log_us,
-        (unsigned long)dropped
-    );
-
-    // Verificar que el JSON entre en el buffer.
-    return written >= 0 &&
-           static_cast<size_t>(written) < len;
+    return w.finish();
 }

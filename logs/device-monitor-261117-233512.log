@@ -1,0 +1,106 @@
+esp32-prototipo-1 | aging anterior -13 | aplicado -13
+PCNT/PPS/SQW listos. Tres relojes con referencias REALES.
+Las 3 horas se consultan a ticks iguales. RTC se ajustara una vez desde GNSS real.
+Verificar en el receptor la asociacion RMC/PPS.
+[WiFi] begin()
+[WiFi] conectando a SSID: PATAN
+.-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:13.386566
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+....-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:14.386627
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+..
+[WiFi] conectado! IP=192.168.0.109
+[WiFi] conectando TCP a 192.168.0.119:8080
+[WiFi] TCP conectado!
+JSON de prueba agregado a la cola
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:15.386597
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:16.387604
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:17.387573
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:18.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:19.387573
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:20.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:21.387573
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:22.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:23.387573
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:24.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:25.387604
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:26.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:27.387604
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:28.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:29.387604
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:30.387634
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks
+-----------------------------
+GNSS/PPS    : NO DISPONIBLE
+RTC/SQW     : 2026-11-17 23:35:31.387604
+RTC+KALMAN  : NO DISPONIBLE
+RTC sincronizado: NO | Kalman entrenado: NO | phi: 0.000 ticks

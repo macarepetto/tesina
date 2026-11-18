@@ -103,7 +103,7 @@ void loop() {
 
     // UNA lectura del PCNT para comparar exactamente el mismo instante.
     static uint32_t ultimo_print_ms = 0;
-    if (ms - ultimo_print_ms >= 250UL) {
+    if (ms - ultimo_print_ms >= 1000UL) {
         ultimo_print_ms = ms;
         const uint64_t same_ticks = app.pcnt().read();
         int64_t gnss = 0, rtc = 0, kalman = 0;
@@ -125,5 +125,5 @@ void loop() {
             Serial.printf("offset Kalman-GNSS: %lld us\n", (long long)(kalman - gnss));
         }
     }
-    delay(100);
+    delay(2);
 }
