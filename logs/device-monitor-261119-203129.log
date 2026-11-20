@@ -1,0 +1,9 @@
+esp32-prototipo-1 | aging anterior -13 | aplicado -13
+PCNT/PPS/SQW listos. Tres relojes con referencias REALES.
+PRUEBA: GNSS en PPS / RTC calendario+SQW+32k / RTC corregido por Kalman
+[WiFi] begin()
+[WiFi] conectando a SSID: PATAN
+....
+[WiFi] conectado! IP=192.168.0.109
+[WiFi] conectando TCP a 192.168.0.119:8080
+[WiFi] TCP conectado!

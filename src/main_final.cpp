@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <RTClib.h>
 #include "Setup.h"
-#include "Json_Log_Builder.h"
 
 static constexpr int32_t MAX_PPS_ERROR_TICKS = 10;
 
@@ -14,29 +13,26 @@ int64_t offset_ticks = 0;
 uint32_t last_pps_ms = 0;
 uint32_t last_predict_ms = 0;
 
-//DEBERIA IR EN OTRO LADO
-static void showTime(const char* name, bool ok, int64_t local_us) {
+// Misma conversion de fecha/hora que utilizaba showTime(), ahora para JSON.
+static void formatTimeJson(char* out, size_t size, bool ok, int64_t local_us) {
     if (!ok || local_us <= 0) {
-        Serial.printf("%-12s: NO DISPONIBLE\n", name);
+        snprintf(out, size, "null");
         return;
     }
 
     const uint32_t secs = uint32_t(local_us / 1000000LL);
     const uint32_t us = uint32_t(local_us % 1000000LL);
-
     const DateTime t(secs);
 
-    Serial.printf(
-        "%-12s: %04u-%02u-%02u %02u:%02u:%02u.%06lu\n",
-        name,
+    snprintf(out, size,
+        "\"%04u-%02u-%02uT%02u:%02u:%02u.%06lu\"",
         unsigned(t.year()),
         unsigned(t.month()),
         unsigned(t.day()),
         unsigned(t.hour()),
         unsigned(t.minute()),
         unsigned(t.second()),
-        (unsigned long)us
-    );
+        (unsigned long)us);
 }
 
 void setup() {
@@ -102,46 +98,32 @@ void loop() {
         last_predict_ms = ms;
     }
 
-    // UNA lectura del PCNT para comparar exactamente el mismo instante.
-    static uint32_t ultimo_print_ms = 0;
-    if (ms - ultimo_print_ms >= 1000UL) {
-        ultimo_print_ms = ms;
+    // Cada 1 segundo: las tres horas consultadas sobre una sola lectura del PCNT.
+    static uint32_t ultimo_log_ms = 0;
+    if (ms - ultimo_log_ms >= 1000UL) {
+        ultimo_log_ms = ms;
         const uint64_t same_ticks = app.pcnt().read();
         int64_t gnss = 0, rtc = 0, kalman = 0;
         const bool gnss_ok = app.clockGnss().getTimeAtTicks(same_ticks, gnss);
         const bool rtc_ok = app.clockRtc().getTimeAtTicks(same_ticks, rtc);
         const bool kalman_ok = rtc_aligned && kalman_trained &&
                          app.clockKalman().getTimeAtTicks(same_ticks, kalman);
-        Serial.println("-----------------------------");
-        showTime("GNSS/PPS", gnss_ok, gnss);
-        showTime("RTC/SQW", rtc_ok, rtc);
-        showTime("RTC+KALMAN", kalman_ok, kalman);
-        Serial.printf("RTC sincronizado: %s | Kalman entrenado: %s | phi: %.3f ticks\n",
-                      rtc_aligned ? "SI" : "NO", kalman_trained ? "SI" : "NO",
-                      app.kalman().getState().phi);
-        if (gnss_ok && rtc_ok) {
-            Serial.printf("offset RTC-GNSS: %lld us\n", (long long)(rtc - gnss));
-        }
-        if (gnss_ok && kalman_ok) {
-            Serial.printf("offset Kalman-GNSS: %lld us\n", (long long)(kalman - gnss));
-        }
-    }
 
-    ///SOLO DE PRUEBA
-    static bool mensaje_enviado = false;
+        // Sin hora disponible, el campo correspondiente se envia como null.
+        char gnss_json[40], rtc_json[40], kalman_json[40];
+        formatTimeJson(gnss_json, sizeof(gnss_json), gnss_ok, gnss);
+        formatTimeJson(rtc_json, sizeof(rtc_json), rtc_ok, rtc);
+        formatTimeJson(kalman_json, sizeof(kalman_json), kalman_ok, kalman);
 
-    if (!mensaje_enviado && app.wifi().isServerConnected()) {
+        char json[256];
+        const int n = snprintf(json, sizeof(json),
+            "{\"id\":\"%s\",\"gnss\":%s,\"rtc\":%s,\"kalman\":%s}",
+            app.deviceId(), gnss_json, rtc_json, kalman_json);
 
-        char json[160];
-
-        snprintf(json, sizeof(json),
-                 "{\"id\":\"%s\",\"tipo\":\"TEST_CONEXION\"}",
-                 app.deviceId());
-
-        if (app.telemetryQueue().enqueue(json)) {
-            mensaje_enviado = true;
-            Serial.println("JSON de prueba agregado a la cola");
+        if (n > 0 && n < (int)sizeof(json) && app.wifi().isServerConnected()) {
+            app.telemetryQueue().enqueue(json);
         }
     }
+
     delay(2);
 }

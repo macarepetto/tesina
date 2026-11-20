@@ -1,0 +1,178 @@
+esp32-prototipo-1 | aging anterior -13 | aplicado -13
+PCNT/PPS/SQW listos. Tres relojes con referencias REALES.
+Las 3 horas se consultan a ticks iguales. RTC se ajustara una vez desde GNSS real.
+Verificar en el receptor la asociacion RMC/PPS.
+[WiFi] begin()
+[WiFi] conectando a SSID: PATAN
+....
+[WiFi] conectado! IP=192.168.0.109
+[WiFi] conectando TCP a 192.168.0.119:8080
+[  1963][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[  4726][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[  7901][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 10741][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 13949][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 16811][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 19985][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 22852][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 26031][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 28921][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 32074][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 34899][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 38110][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 41078][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 43979][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 47051][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 50194][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 53266][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 56132][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 59306][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 62174][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 65347][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 68217][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 71394][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 74257][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 77231][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 80298][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 83475][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 86445][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 89514][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 92399][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 95557][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[ 98431][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[101597][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[104467][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[107639][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[110488][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[113682][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[116753][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[119622][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[122794][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[125765][E][WiFiClient.cpp:275] connect(): socket error on fd 48, errno: 104, "Connection reset by peer"
+[WiFi] TCP NO conecta
+[WiFi] TCP caido -> reintento
+[WiFi] conectando TCP a 192.168.0.119:8080
+[WiFi] TCP conectado!

@@ -55,6 +55,7 @@ bool ClockGNSS::getTimeAtTicks(uint64_t ticks, int64_t& time_us) {
     if (!pps_.peek(edge) || !edge.valid || edge.seq == 0 ||
         edge.seq != ref_seq_ || edge.ticks != ref_ticks_) return false;
     if (ticks < ref_ticks_ || ticks - ref_ticks_ > MAX_EDGE_AGE_TICKS) return false;
-    time_us = ref_time_us_ + ticksToUs(ticks - ref_ticks_);
+    // Hora GNSS del ultimo PPS etiquetado. Sin interpolacion con RTC/32 kHz.
+    time_us = ref_time_us_;
     return true;
 }
