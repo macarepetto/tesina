@@ -38,13 +38,10 @@ void IRAM_ATTR PeriodicTickCapture::onPeriod() {
     //Registros totales, pendientes y descartados
     if (last_.pending) ++last_.discarded;
     
-    if (last_.diff>max_elapsed_ticks_){
-        last_.seq = 0;
-        last_.pending = 0;
-    } else {
-        ++last_.seq;
-        ++last_.pending;
-    }
+    // CAPTURE_CORE solo registra flancos. Si falta PPS durante holdover,
+    // no se reinicia seq: main_kalman decide si el intervalo es valido.
+    ++last_.seq;
+    ++last_.pending;
     last_.valid = true;
     portEXIT_CRITICAL_ISR(&mux_);
 }

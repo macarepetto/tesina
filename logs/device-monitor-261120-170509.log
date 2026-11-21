@@ -1,0 +1,10 @@
+esp32-prototipo-1 | aging anterior -13 | aplicado -13
+PCNT/PPS/SQW listos. Tres relojes con referencias REALES.
+Tres relojes: hora del MISMO tick capturado.
+GNSS solo en PPS con UTC asociada; RTC y Kalman tambien en holdover.
+[WiFi] begin()
+[WiFi] conectando a SSID: PATAN
+....
+[WiFi] conectado! IP=192.168.0.106
+[WiFi] conectando TCP a 192.168.0.119:8080
+[WiFi] TCP conectado!
