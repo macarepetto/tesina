@@ -5,23 +5,14 @@
 #include <string.h>
 #include "Setup.h"
 #include "Json_Log_Builder.h"
+#include "Physical_Event_Module.h"
 
-// Basado en main_kalman.cpp del ZIP del 20/11.
-// Se conserva EL ALGORITMO de entrenamiento y holdover de Kalman.
-// Three_Clocks_Module se reemplaza por ClockGNSS + ClockRTC + ClockKalman.
-
-static constexpr uint32_t PPS_TIME_TOLERANCE_US = 200000UL;
-static constexpr int64_t MAX_DIFF_TICKS = 10;
-static constexpr uint32_t HOLDOVER_TIMEOUT_MS = 1500;
-static constexpr uint32_t HOLDOVER_STEP_MS = 1000;
-static constexpr uint32_t BACKGROUND_TASKS_PERIOD_MS = 20;
-static constexpr uint32_t RTC_SYNC_MAX_POST_PPS_US = 50000;
-
-Setup app("esp32-prototipo-1");
+Setup app("prototipo-2");
+PhysicalEventModule physical_event(app.pcnt());
 static bool rtc_sincronizado_utc = false;
 static uint32_t rtc_sync_pps_seq = 0;
-static uint32_t rtc_sync_inicio_post_pps_us = 0;
-static uint32_t estadistica_inicio_pps_seq = 0;
+//static uint32_t rtc_sync_inicio_post_pps_us = 0;
+//static uint32_t estadistica_inicio_pps_seq = 0;
 static bool kalman_entrenado = false;
 
 static bool utcListaParaInicializar(DateTime* rmc_out = nullptr) {
@@ -38,41 +29,22 @@ static void sincronizarRtcConUtcEnPps(uint32_t seq, uint32_t pps_us,
     if (!utcListaParaInicializar(&gps_local)) return;
 
     const uint32_t inicio_post_pps_us = uint32_t(micros() - pps_us);
-    if (inicio_post_pps_us > RTC_SYNC_MAX_POST_PPS_US) return;
+    if (inicio_post_pps_us > Setup::RTC_SYNC_MAX_POST_PPS_US) return;
 
     if (app.rtc().setFromDateTime(gps_local)) {
         app.clockRtc().invalidateOnCalendarWrite();
         rtc_sincronizado_utc = true;
         rtc_sync_pps_seq = seq;
-        rtc_sync_inicio_post_pps_us = inicio_post_pps_us;
+        //rtc_sync_inicio_post_pps_us = inicio_post_pps_us;
     }
 }
 
 static void runBackgroundTasks() {
     static uint32_t last_ms = 0;
     const uint32_t now_ms = millis();
-    if (uint32_t(now_ms - last_ms) < BACKGROUND_TASKS_PERIOD_MS) return;
+    if (uint32_t(now_ms - last_ms) < Setup::BACKGROUND_TASKS_PERIOD_MS) return;
     last_ms = now_ms;
     app.gps().update();
-    static uint32_t ultimo_diag = 0;
-
-if (millis() - ultimo_diag >= 5000) {
-    ultimo_diag = millis();
-
-    TickEdgeSample pps;
-    bool recibido = app.pps().peek(pps);
-    auto stats = app.telemetryQueue().getStats();
-
-    Serial.printf(
-        "[DIAG] PPS=%lu | RTC=%s | Cola=%lu | Enviados=%lu | Offline=%lu | Fallidos=%lu\n",
-        (unsigned long)(recibido ? pps.seq : 0),
-        app.clockRtc().lastState(),
-        (unsigned long)stats.enqueued,
-        (unsigned long)stats.tcp_accepted,
-        (unsigned long)stats.tcp_offline,
-        (unsigned long)stats.tcp_write_failed
-    );
-}
     app.gps().consultarUbxUtcSiCorresponde();
 }
 
@@ -84,31 +56,17 @@ static void addGpsTelemetry(JsonLogRecord& record) {
     record.utc_valid = utcListaParaInicializar();
 }
 
-// Conservar las tres fechas ISO que publicaba main_final.cpp del ZIP.
-// La fuente de cada hora ahora es la definida en su clase Clock.
-static void formatTimeJson(char* out, size_t size, bool ok, int64_t local_us) {
-    if (!ok || local_us <= 0) {
-        snprintf(out, size, "null");
-        return;
-    }
-    const uint32_t secs = uint32_t(local_us / 1000000LL);
-    const uint32_t us = uint32_t(local_us % 1000000LL);
-    const DateTime dt(secs);
-    snprintf(out, size,
-        "\"%04u-%02u-%02uT%02u:%02u:%02u.%06lu\"",
-        unsigned(dt.year()), unsigned(dt.month()), unsigned(dt.day()),
-        unsigned(dt.hour()), unsigned(dt.minute()), unsigned(dt.second()),
-        (unsigned long)us);
-}
-
 // Usa una sola muestra de ticks para los TRES relojes.
-// Para GNSS fuera de PPS se devuelve null: no inventa nueva UTC.
+// Para HOLDOVER el GNSS se deja en null; para EVENTO_FISICO se interpola
+// desde el ultimo PPS validado usando el contador de 32k.
 static void sendRecord(JsonLogRecord& record, uint64_t sample_ticks,
                        bool pps_comparable, bool allow_kalman) {
     record.clocks.has_ticks = true;
     record.clocks.ticks = sample_ticks;
     record.clocks.gnss_ok = pps_comparable &&
         app.clockGnss().getTimeAtTicks(sample_ticks, record.clocks.gnss_us);
+    record.clocks.rtc_raw_ok =
+        app.clockRtc().getRawTimeAtTicks(sample_ticks, record.clocks.rtc_raw_us);
     record.clocks.rtc_ok =
         app.clockRtc().getTimeAtTicks(sample_ticks, record.clocks.rtc_us);
     record.clocks.kalman_ok = allow_kalman &&
@@ -119,20 +77,6 @@ static void sendRecord(JsonLogRecord& record, uint64_t sample_ticks,
         Serial.println("ERROR: no se pudo construir JSON del registro");
         return;
     }
-    char gnss_json[40], rtc_json[40], kalman_json[40];
-    formatTimeJson(gnss_json, sizeof(gnss_json),
-                   record.clocks.gnss_ok, record.clocks.gnss_us);
-    formatTimeJson(rtc_json, sizeof(rtc_json),
-                   record.clocks.rtc_ok, record.clocks.rtc_us);
-    formatTimeJson(kalman_json, sizeof(kalman_json),
-                   record.clocks.kalman_ok, record.clocks.kalman_us);
-    const size_t used = strlen(json);
-    if (used < 2 || json[used-1] != '}') return;
-    const size_t available = sizeof(json) - (used-1);
-    const int n = snprintf(json + used - 1, available,
-        ",\"gnss\":%s,\"rtc\":%s,\"kalman\":%s}",
-        gnss_json, rtc_json, kalman_json);
-    if (n <= 0 || size_t(n) >= available) return;
     app.telemetryQueue().enqueue(json);
 }
 
@@ -144,20 +88,64 @@ static JsonLogRecord recordBase(JsonLogType type, uint32_t ms) {
     r.aging = app.agingApplied();
     r.rtc_aligned = rtc_sincronizado_utc;
     r.kalman_trained = kalman_entrenado;
+    r.rtc_calibrated = app.clockRtc().calibrated();
+    r.rtc_initial_correction_us = app.clockRtc().initialCorrectionUs();
     return r;
+}
+
+// La fase GNSS-RTC se fija UNA VEZ. No toca RTC I2C, SQW ni el filtro.
+static void calibrarRtcInicialEnPps(uint64_t ticks, bool pps_gnss_valido) {
+    if (!pps_gnss_valido || app.clockRtc().calibrated()) return;
+    int64_t gnss_us = 0;
+    if (!app.clockGnss().getTimeAtTicks(ticks, gnss_us)) return;
+    if (!app.clockRtc().calibrateOnce(ticks, gnss_us)) return;
+    // El reloj Kalman parte de ESTE mismo origen, sin reiniciar ni entrenar
+    // el filtro. Asi la correccion de deriva vale cero al calibrar.
+    app.clockKalman().setReference();
+    Serial.printf("RTC calibrado: correccion inicial %+lld us\n",
+        static_cast<long long>(app.clockRtc().initialCorrectionUs()));
+}
+
+// El instante es el de la ISR. Las tres horas se calculan DESPUES, usando
+// los mismos ticks, sin consultar el contador tres veces ni entrenar Kalman.
+static void publicarEventosFisicos() {
+    PhysicalEventSample event;
+    for (int i = 0; i < 4 && physical_event.consume(event); ++i) {
+        JsonLogRecord record = recordBase(JsonLogType::EVENTO_FISICO, millis());
+        physical_event.fillRecord(record, event);
+        // Estado disponible al procesar el evento (la ISR NO lee Kalman).
+        // No se ejecutan predict() ni updatePhi() por el pulsador.
+        record.has_kalman = app.clockRtc().calibrated();
+        if (record.has_kalman) record.kalman = app.kalman().getState();
+        // Referencia PPS anterior al boton, si aun esta disponible.
+        TickEdgeSample last_pps;
+        if (app.pps().peek(last_pps)) {
+            physical_event.fillPpsAge(record, event, last_pps);
+        }
+        // GNSS al evento: interpolado desde el ultimo PPS validado por PCNT.
+        // Si no hay referencia, ClockGNSS devuelve false y se publica null.
+        sendRecord(record, event.ticks, true, true);
+    }
 }
 
 void setup() {
     app.begin();
+    if (!physical_event.begin(Setup::PIN_PULSADOR)) {
+        Serial.println("ERROR: no se pudo iniciar pulsador GPIO13");
+        while (true) delay(1000);
+    }
     Serial.println("main_kalman: entrenamiento PPS original + tres clases Clock");
     Serial.println("ClockRTC = CALENDARIO DS3231 + SQW + PCNT 32 kHz");
 }
 
 void loop() {
+    // El evento se procesa ANTES de actualizar SQW o Kalman/PPS, para
+    // evitar consultar un anclaje o estado posteriores a su captura.
+    publicarEventosFisicos();
+
     // La lectura I2C del SQW se atiende fuera de ISR, incluso sin GNSS.
     app.clockRtc().update();
 
-    // Estado preservado de main_kalman.cpp.
     static bool hay_anterior = false;
     static uint64_t ticks_raw_prev = 0;
     static uint32_t seq_prev = 0;
@@ -181,9 +169,9 @@ void loop() {
         const uint32_t now_ms = millis();
         const uint32_t ms_since_last_pps = now_ms - last_pps_seen_ms;
         const bool pps_perdido =
-            ms_since_last_pps > HOLDOVER_TIMEOUT_MS;
+            ms_since_last_pps > Setup::HOLDOVER_TIMEOUT_MS;
         const bool corresponde_predecir =
-            now_ms - last_holdover_predict_ms >= HOLDOVER_STEP_MS;
+            now_ms - last_holdover_predict_ms >= Setup::HOLDOVER_STEP_MS;
 
         if (pps_perdido && corresponde_predecir) {
             en_holdover = true;
@@ -243,15 +231,13 @@ void loop() {
             ? uint64_t(elapsed_us) - expected_us
             : expected_us - uint64_t(elapsed_us);
     const bool interval_valid = seq_delta > 0 &&
-        timing_error_us <= PPS_TIME_TOLERANCE_US;
+        timing_error_us <= Setup::PPS_TIME_TOLERANCE_US;
 
-    int64_t diff = 0;
-    bool diff_outlier = false;
-    if (interval_valid && seq_delta == 1 && !venia_de_holdover) {
-        const int64_t diff_candidato = int64_t(ticks_window) - 32768LL;
-        diff_outlier = (diff_candidato > MAX_DIFF_TICKS) ||
-                       (diff_candidato < -MAX_DIFF_TICKS);
-    }
+    // if (interval_valid && seq_delta == 1 && !venia_de_holdover) {
+    //     const int64_t diff_candidato = int64_t(ticks_window) - 32768LL;
+    //     diff_outlier = (diff_candidato > MAX_DIFF_TICKS) ||
+    //                    (diff_candidato < -MAX_DIFF_TICKS);
+    // }
     const bool pps_apto_para_inicio =
         pending == 1 && seq_delta == 1 && interval_valid &&
         !venia_de_holdover;
@@ -261,9 +247,10 @@ void loop() {
     if (!sincronizado_antes) {
         if (rtc_sincronizado_utc) {
             offset_ticks = 0;
-            app.kalman().reset();  // IGUAL a main_kalman
+            app.kalman().reset();
             kalman_entrenado = false;
-            app.clockKalman().setReference();
+            // Kalman solo fija su origen horario cuando RTC y GNSS
+            // puedan compararse en el MISMO PPS (no en la escritura I2C).
             en_holdover = false;
             holdover_steps = 0;
         }
@@ -274,10 +261,12 @@ void loop() {
             app.gps().getLastValidLocalDateTime(gnss_local) &&
             app.gps().hasValidRmcRecent(1500);
         const bool pps_apto = rtc_sincronizado_utc && pps_apto_para_inicio;
-        app.clockGnss().observePps(pps_apto, seq, ticks_raw,
+        const bool gnss_inicio_valido = app.clockGnss().observePps(
+            pps_apto, seq, ticks_raw,
             rtc_sincronizado_utc ? &estado_inicial : nullptr,
             rmc_recent, gnss_local, rtc_sincronizado_utc,
             rtc_sync_pps_seq, utcListaParaInicializar());
+        calibrarRtcInicialEnPps(ticks_raw, gnss_inicio_valido);
         if (rtc_sincronizado_utc) {
             app.clockKalman().captureStateAtTicks(ticks_raw);
         }
@@ -299,11 +288,13 @@ void loop() {
     }
 
     // ==================== KALMAN: SIN CAMBIOS ====================
+    int64_t diff = 0;
+    bool diff_outlier = false;
     if (interval_valid && !venia_de_holdover) {
         const int64_t expected_ticks = int64_t(32768) * int64_t(seq_delta);
         diff = int64_t(ticks_window) - expected_ticks;
-        diff_outlier = (diff > MAX_DIFF_TICKS) ||
-                       (diff < -MAX_DIFF_TICKS);
+        diff_outlier = (diff > Setup::MAX_DIFF_TICKS) ||
+                       (diff < -Setup::MAX_DIFF_TICKS);
         if (!diff_outlier) offset_ticks += diff;
     }
 
@@ -318,16 +309,14 @@ void loop() {
         kalman_state = app.kalman().getState();
         kalman_actualizado = true;
         kalman_entrenado = true;
-        if (estadistica_inicio_pps_seq == 0)
-            estadistica_inicio_pps_seq = seq;
+        // if (estadistica_inicio_pps_seq == 0)
+        //     estadistica_inicio_pps_seq = seq;
     } else {
         kalman_state = app.kalman().getState();
         kalman_actualizado = false;
         kalman_prediccion = false;
     }
 
-    // Misma reconstrucción de segundos y controles de Three_Clocks_Module,
-    // pero sólo aplica a la referencia GNSS. NO define la hora RTC.
     app.clockGnss().observePpsInterval(
         venia_de_holdover, elapsed_us, seq_delta, pending, ticks_window);
     DateTime gnss_local(2000, 1, 1, 0, 0, 0);
@@ -338,10 +327,11 @@ void loop() {
     const bool pps_apto_para_relojes =
         pending == 1 && seq_delta == 1 &&
         kalman_actualizado && !venia_de_holdover;
-    app.clockGnss().observePps(
+    const bool gnss_valido_en_pps = app.clockGnss().observePps(
         pps_apto_para_relojes, seq, ticks_raw, &kalman_state,
         rmc_recent, gnss_local, rtc_sincronizado_utc,
         rtc_sync_pps_seq, utcListaParaInicializar());
+    calibrarRtcInicialEnPps(ticks_raw, gnss_valido_en_pps);
 
     // Estado Kalman del mismo PPS; la lectura posterior no lo reentrena.
     app.clockKalman().captureStateAtTicks(ticks_raw);

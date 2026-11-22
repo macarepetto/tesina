@@ -1,5 +1,7 @@
 #include "Json_Log_Builder.h"
 
+#include <RTClib.h>
+
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -141,6 +143,8 @@ void addClockFields(JsonWriter& w, const ClockLogSnapshot& c) {
     else w.nullValue("gnss_us");
     if (c.rtc_ok) w.signedNumber("rtc_us", c.rtc_us);
     else w.nullValue("rtc_us");
+    if (c.rtc_raw_ok) w.signedNumber("rtc_fisico_us", c.rtc_raw_us);
+    else w.nullValue("rtc_fisico_us");
     if (c.kalman_ok) w.signedNumber("kalman_us", c.kalman_us);
     else w.nullValue("kalman_us");
 
@@ -155,6 +159,27 @@ void addClockFields(JsonWriter& w, const ClockLogSnapshot& c) {
     if (c.rtc_ok && c.kalman_ok)
         w.signedNumber("kalman_menos_rtc_us", c.kalman_us - c.rtc_us);
     else w.nullValue("kalman_menos_rtc_us");
+}
+
+void addIsoClockTime(JsonWriter& w, const char* key,
+                     bool ok, int64_t local_us) {
+    if (!ok || local_us <= 0) {
+        w.nullValue(key);
+        return;
+    }
+
+    const uint32_t secs = uint32_t(local_us / 1000000LL);
+    const uint32_t us = uint32_t(local_us % 1000000LL);
+    const DateTime dt(secs);
+
+    char formatted_time[40];
+    snprintf(formatted_time, sizeof(formatted_time),
+        "%04u-%02u-%02uT%02u:%02u:%02u.%06lu",
+        unsigned(dt.year()), unsigned(dt.month()), unsigned(dt.day()),
+        unsigned(dt.hour()), unsigned(dt.minute()), unsigned(dt.second()),
+        (unsigned long)us);
+
+    w.string(key, formatted_time);
 }
 
 void addKalmanFields(JsonWriter& w, const JsonLogRecord& r) {
@@ -207,6 +232,10 @@ bool buildLogJson(const JsonLogRecord& r, char* out, size_t len) {
     w.signedNumber("aging", r.aging);
     w.boolean("rtc_aligned", r.rtc_aligned);
     w.boolean("kalman_trained", r.kalman_trained);
+    w.boolean("rtc_calibrado", r.rtc_calibrated);
+    if (r.rtc_calibrated)
+        w.signedNumber("rtc_correccion_inicial_us", r.rtc_initial_correction_us);
+    else w.nullValue("rtc_correccion_inicial_us");
     w.string("escala_hora", "LOCAL_UTC-3");
 
     addClockFields(w, r.clocks);
@@ -249,13 +278,18 @@ bool buildLogJson(const JsonLogRecord& r, char* out, size_t len) {
     }
     addKalmanFields(w, r);
 
-    if (r.tipo == JsonLogType::HOLDOVER || r.tipo == JsonLogType::EVENTO_FISICO) {
+    if (r.tipo == JsonLogType::HOLDOVER) {
         w.unsignedNumber("ms_since_last_pps", r.ms_since_last_pps);
+    } else if (r.tipo == JsonLogType::EVENTO_FISICO) {
+        if (r.event_pps_age_valid)
+            w.unsignedNumber("ms_since_last_pps", r.ms_since_last_pps);
+        else w.nullValue("ms_since_last_pps");
     }
     if (r.tipo == JsonLogType::HOLDOVER) {
         w.unsignedNumber("holdover_steps", r.holdover_steps);
     }
     if (r.tipo == JsonLogType::EVENTO_FISICO) {
+        w.boolean("gnss_evento_interpolado_32k", r.clocks.gnss_ok);
         w.unsignedNumber("evento_num", r.event_num);
         w.boolean("evento_captura_ok", r.event_captured);
         w.unsignedNumber("evento_esp_us", r.event_us);
@@ -271,6 +305,11 @@ bool buildLogJson(const JsonLogRecord& r, char* out, size_t len) {
     else w.nullValue("hdop");
     if (r.has_utc_validation) w.boolean("utc_validada", r.utc_valid);
     else w.nullValue("utc_validada");
+    
+    addIsoClockTime(w, "gnss", r.clocks.gnss_ok, r.clocks.gnss_us);
+    addIsoClockTime(w, "rtc", r.clocks.rtc_ok, r.clocks.rtc_us);
+    addIsoClockTime(w, "kalman", r.clocks.kalman_ok, r.clocks.kalman_us);
+    addIsoClockTime(w, "rtc_fisico", r.clocks.rtc_raw_ok, r.clocks.rtc_raw_us);
 
     return w.finish();
 }

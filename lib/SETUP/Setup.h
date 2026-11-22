@@ -27,6 +27,13 @@ public:
     static constexpr const char* SERVER_IP = "192.168.0.119";
     static constexpr uint16_t SERVER_PORT = 8080;
 
+    static constexpr uint32_t PPS_TIME_TOLERANCE_US = 200000UL;
+    static constexpr int64_t MAX_DIFF_TICKS = 10;
+    static constexpr uint32_t HOLDOVER_TIMEOUT_MS = 1500;
+    static constexpr uint32_t HOLDOVER_STEP_MS = 1000;
+    static constexpr uint32_t BACKGROUND_TASKS_PERIOD_MS = 20;
+    static constexpr uint32_t RTC_SYNC_MAX_POST_PPS_US = 50000;
+
     explicit Setup(const char* device_id);
     void begin();
 

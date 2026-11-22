@@ -1,0 +1,9 @@
+Aging anterior: -13 | aplicado: -13
+main_kalman: entrenamiento PPS original + tres clases Clock
+ClockRTC = CALENDARIO DS3231 + SQW + PCNT 32 kHz
+[WiFi] begin()
+[WiFi] conectando a SSID: PATAN
+....
+[WiFi] conectado! IP=192.168.0.108
+[WiFi] conectando TCP a 192.168.0.119:8080
+[WiFi] TCP conectado!

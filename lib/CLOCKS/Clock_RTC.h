@@ -7,7 +7,8 @@
 
 // Port fiel de RTC_SQW_Clock_Module: la FECHA/HORA viene del DS3231
 // por I2C, se ancla al SQW, y sólo la fracción proviene del PCNT de 32k.
-// No usa GNSS, no entrena Kalman, no ajusta el RTC.
+// El avance RTC no usa PPS ni entrena Kalman; permite una calibracion
+// inicial EXTERNA de la hora reconstruida, sin ajustar el DS3231.
 class ClockRTC : public Clock {
 public:
     ClockRTC(PcntExtended& counter, PeriodicTickCapture& sqw, RTC_Module& rtc)
@@ -16,6 +17,16 @@ public:
     bool begin(int pin_rtc_sqw);
     void invalidateOnCalendarWrite();
     bool update();
+    // Reloj REAL, sin ninguna calibracion por GNSS (calendario + SQW + 32k).
+    bool getRawTimeAtTicks(uint64_t ticks, int64_t& time_us);
+
+    // Calibracion de fase UNA SOLA VEZ, usando una pareja de horas tomadas
+    // en los mismos ticks de un PPS validado. No escribe el DS3231.
+    bool calibrateOnce(uint64_t ticks, int64_t gnss_us);
+    bool calibrated() const { return calibrated_; }
+    int64_t initialCorrectionUs() const { return initial_correction_us_; }
+
+    // RTC reconstruido calibrado. Antes de calibrar, devuelve el RTC REAL.
     bool getTimeAtTicks(uint64_t ticks, int64_t& time_us) override;
 
     // Estadísticas/detección sin cambiar el criterio del antiguo módulo.
@@ -40,6 +51,8 @@ private:
     uint64_t anchor_ticks_ = 0;
     int64_t anchor_epoch_s_ = 0;
     const char* state_ = "RTC_SQW_INICIO";
+    bool calibrated_ = false;
+    int64_t initial_correction_us_ = 0;
 
     static bool setDs3231Sqw1Hz();
 };

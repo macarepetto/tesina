@@ -102,12 +102,29 @@ bool ClockRTC::update() {
     return valid;
 }
 
-bool ClockRTC::getTimeAtTicks(uint64_t ticks, int64_t& time_us) {
+bool ClockRTC::getRawTimeAtTicks(uint64_t ticks, int64_t& time_us) {
     if (!anchor_valid_ || ticks < anchor_ticks_ ||
         ticks - anchor_ticks_ > MAX_ELAPSED_TICKS ||
         anchor_epoch_s_ <= 0) return false;
     // Igual a RTC_SQW_Time_Math::convert: redondeo entero al us.
     time_us = anchor_epoch_s_ * 1000000LL +
               ticksToUs(ticks - anchor_ticks_);
+    return true;
+}
+
+// GNSS solo proporciona la referencia inicial desde main; este modulo
+// sigue leyendo su calendario, SQW y PCNT sin usar los PPS para avanzar.
+bool ClockRTC::calibrateOnce(uint64_t ticks, int64_t gnss_us) {
+    if (calibrated_) return false;
+    int64_t raw_us = 0;
+    if (!getRawTimeAtTicks(ticks, raw_us)) return false;
+    initial_correction_us_ = gnss_us - raw_us;
+    calibrated_ = true;
+    return true;
+}
+
+bool ClockRTC::getTimeAtTicks(uint64_t ticks, int64_t& time_us) {
+    if (!getRawTimeAtTicks(ticks, time_us)) return false;
+    if (calibrated_) time_us += initial_correction_us_;
     return true;
 }

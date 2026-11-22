@@ -23,7 +23,9 @@ struct ClockLogSnapshot {
     bool gnss_ok = false;
     int64_t gnss_us = 0;
     bool rtc_ok = false;
-    int64_t rtc_us = 0;
+    int64_t rtc_us = 0;         // RTC calibrado (o raw mientras espera calibracion).
+    bool rtc_raw_ok = false;
+    int64_t rtc_raw_us = 0;     // RTC fisico SIEMPRE sin calibrar.
     bool kalman_ok = false;
     int64_t kalman_us = 0;
 };
@@ -36,6 +38,8 @@ struct JsonLogRecord {
     int aging = 0;
     bool rtc_aligned = false;
     bool kalman_trained = false;
+    bool rtc_calibrated = false;
+    int64_t rtc_initial_correction_us = 0;
 
     ClockLogSnapshot clocks;
 
@@ -54,6 +58,7 @@ struct JsonLogRecord {
     Kalman_State kalman;
 
     uint32_t ms_since_last_pps = 0;
+    bool event_pps_age_valid = false; // Para evento sin PPS previo, publicar null.
     uint32_t holdover_steps = 0;
 
     // Datos disponibles en GPS_Module. Un valor negativo equivale a dato no disponible.
